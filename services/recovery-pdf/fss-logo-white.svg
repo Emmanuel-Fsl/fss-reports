@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="360" zoomAndPan="magnify" viewBox="76.144531 191.988281 130.363281 137.855469" height="630" preserveAspectRatio="xMidYMid meet" version="1.0">
+  <defs>
+    <filter x="0%" y="0%" width="100%" height="100%" id="61c6d81614">
+      <feColorMatrix values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 1 0" color-interpolation-filters="sRGB"/>
+    </filter>
+    <filter x="0%" y="0%" width="100%" height="100%" id="2b17997e5e">
+      <feColorMatrix values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0.2126 0.7152 0.0722 0 0" color-interpolation-filters="sRGB"/>
+    </filter>
+    <clipPath id="723b490dd0">
+      <path d="M 76.144531 191.988281 L 206.507812 191.988281 L 206.507812 329.84375 L 76.144531 329.84375 Z M 76.144531 191.988281 " clip-rule="nonzero"/>
+    </clipPath>
+    <mask id="c38b1c7f50">
+      <g filter="url(#61c6d81614)">
+        <g filter="url(#2b17997e5e)" transform="matrix(1.490136, 0, 0, 1.488961, -26.701125, 0)">
+          <image x="0" y="0" width="181" xlink:href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAALUAAAE9CAAAAABorHx0AAAAAmJLR0QA/4ePzL8AAAgASURBVHic7dpfqBxnGcfx7/O+u3tyTk5imjRpziERyR//FLwRFEsDvRERhVhKId6o0V4IxYoVvCq5aVFKFQMFi0SqGAxNpNWWKiJVL6RBKq1XbW4qaaH5a9P8z0nO7sz7ePHO7M7unuzsOZnZVHg+h5Pszu6Z+e2zz74z886CMcYYY4wxxhhjjDHGGGOMMcYYY4wxxhhjjDHGGGOMMcYYY4wxxhhjjDHGGGOMMcYYY4wxxhhjjDHGGGNOPWb+BKsVUODUanj5vdse6SZmgFc3wd+OwRc0T+1B75aCuHfm3biIJB60CrgH3PsHj86NXMlEUz/+CvjBzbtuBFVosp/Xf3fjg3TkiibWIfcehTVfKN1865m96y+UrmxitX51K8g/QfqW+ryns5bm0N5N5aEnU2vdfhw8zK4fTN0APAiigFO+8sSndiS03PGTo1ZYe+rP/JsYVUGag6mJn79Y60a6H/btA+C1z49aae2p3xBiH8pS7ehiXgECzSMPrLuMiooOPXHoz+ozk9/IdtaBwVonoNmSlJ8/sOGSKkpZ6FpTr7o2uGSpOKoAQotvbbrscThEhvqoX50dMtN3T5boaUL8VRr6NzjRe+D0/Kg111Xr2fthTfeexF8/9DQhdgmtlz63TkTEe++dd35k6NpS7/4DNPuWKIQw2CRpPPpo8+yXN1wCCCEEDRpGr72uDpmmWJF8HBlKLYhrQIM9W6+IZsNgcKqjP5B11Hp7C9Yi0r9uhVTzrLmANqecexveawdVDUmSJCFJw1Mjt1BHrY89dEhmUN//4XPgdLhMwkLjl6y7VHiaSigZsetI3VpQnb0qoT91iH3d37EpembtgW/0QhOgfMSu5dPoxM3Oqhuq9fDI5+C9+745d7W4yIkvGa4rT/0swJQGj4TeupVY66GnCzwMpxPtSdOQhJJaV90h3/5Owok7cM2l6uEZLNOUf5JH/og4L/GdEFS0tEMq72ufMLeBkC5RWJDBes88/XChp8dWeWoH3iGNvqpm+8a803tt+4q7awWha0mNxD3h0Gcqn6cpPPviM6slFd8QUVEnIuDEd3aN3kjlqbuHHA7A9TWEKzwHkCf488ktU6Hpm+JoN9QnLTrqOq5kh15p6sNf66VrxAYu1FviIUev1q0nH11JT2cbqMye/IZAA+eG1u3odhDw00fvXGHoOvaNElOH4Z1K3O/lHvne/PokKAjdswAFEcKp9uhNVJhauv9mfe1wWUjpPcUTX9dP4Ombruo3e0dvqsLUvSp6cATCYL3zkiqrfr3njosr31QttaY7OvveaBCg4fNaH3xw8y2ErqfW0t0L9g9h0oivyvPgjz62MQkp5PMhvVUIkv6nZFMVpu5t3ecLfCG2QtODw+sL8Nhjo1ZVdsxXYeqhXUMYXCQCSvOlL44xATlSLbWmW61CX0veIX+/Z+4WQ9da6/5lAo3V4LlnxwU/cpddOvVUda1dPhEJIBRPZxw0poW3oOyzVtrW1dZaNBSn9KB41urBudaLzJ8FslfWjVcob2lkaqo18YRVu/vG7OG2P7Zt8/uF7lhy3m+MTVVaayX0n1+nhcI14Rzbdp4vFrOYUJZYdjMVHvPFWg/MLbluohbyELzdTkNP4SRXu8ueL99UxWNIyOao8+zZ8bUHVvvfs+8wQFBVEFx8Y4qvU0FPTTQ1iLr8mC+LkD8A3HXs4/OnK9pQpaljX4OPR3e91E3gCDv/W3rpYkxVppY4hjiascmzi7aiNH0A/tFcDOKlMNwVp06DEghy4bOjL5BWnpp8HElias3DMcvLvHtu/Q3wOCdOCAQlpD6g2SUlkVRodTpjhK46teBw6vOrWnGZsunNT86fyfYrCjiWnDUVLT07jypOrSgh7fQNDArPsf1scWc4NPtOfFDGC119rRXXWShepBMBFvefvz7jCUGcEydeNRA6LtGgGtAAdK5eSxozbx25Dan1TQjTJ9DFfAHCb2Fq95greP52pObTICxAb0Z61Qtf2npGggSFbjO7EH/iPc3flbIZ4FwN8yHKFFzs9vBfdn30lPaGkyjNfiguH38wr+MKxxtN3JXstrDrFzs3tVUlFRWV7gylQpLVWwmAF/Ht4zXEGZMDfqxwtzp3SJfj3TG3UEetA5C8AylTh3fPn1W8SHD9U5M4CK5/BCz/rsIkbNMXdS5et3ClF/SXpd7vh3x1x0WvxO8g9JVah84BRBl3BBnvLG2llv1+jx2mxlr/io3nJHaGFkdnstczMGZ/GHoaDug6AHHO1fmGVutnGr9/6pz3zon33osXLwXZsjGu5U7Kvhh60/hj9Y5lrL2mV/nDp7ILRRt9PPgQjwQXeseB8dJeUFBVDe0bnXqSLMP3S74//aH0A11beBPjMOKcyy7VFDiHw0vVX0FYke9q73tabIlfRFi6l0Paua6qemmZueno67nLC71TKdnTkGaztaox5VOf5vvJEBTSJAlJ2r6xcOXyv2qIcYsqPQT5PzaRMhyYlumGNBpxJ6maqqYoSUiun++Ex29MIsOyuUVtL3Y6fZ/IENI06SxeO6m67Xbnuwnra2CiZdgRUoWGE9CgQZ28M7mNr1RreCdz/+3ONAbrbmOMMcYYY4wxxhhjjDHGGGOMMcYYY4wxxhhjjDHGGGOMMcYYY4wxxhhjjDHGGGOG/A+vgkvcWil2+wAAAABJRU5ErkJggg==" height="317" preserveAspectRatio="xMidYMid meet"/>
+        </g>
+      </g>
+    </mask>
+  </defs>
+  <!-- White fill masked to the logo shape -->
+  <g clip-path="url(#723b490dd0)">
+    <g mask="url(#c38b1c7f50)">
+      <g transform="matrix(1.490136, 0, 0, 1.488961, -26.701125, 0)">
+        <rect x="0" y="0" width="181" height="317" fill="white"/>
+      </g>
+    </g>
+  </g>
+</svg>

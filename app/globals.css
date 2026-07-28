@@ -1,0 +1,30 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-sans: var(--font-nunito), 'Nunito Sans', sans-serif;
+  --font-mono: var(--font-fira), 'Fira Code', monospace;
+  --green:       #2E7D32;
+  --green-light: #E8F5E9;
+  --green-dark:  #1B5E20;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: #FAFAFA;
+  color: #111827;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar       { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #F3F4F6; border-radius: 8px; }
+::-webkit-scrollbar-thumb { background: #D1D5DB; border-radius: 8px; border: 2px solid #F3F4F6; }
+::-webkit-scrollbar-thumb:hover { background: #9CA3AF; }
+
+/* Mono utility */
+.font-mono { font-family: var(--font-mono); }

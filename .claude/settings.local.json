@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -m py_compile report_worker.py job_main.py main.py)",
+      "Bash(grep -n \"cubic-bezier\\(0.16, 1, 0.3, 1\\)\\\\|transitionDelay: \\\\`\\\\${i \\\\* 40}ms\\\\`\\\\|const delay.*40\" /Users/emmanuelokorie/Documents/fss-reports/components/reports/AgentPerformanceView.tsx)"
+    ]
+  }
+}

@@ -1,0 +1,11 @@
+flask
+gunicorn
+hypercorn
+pandas
+pandas-gbq
+matplotlib
+Pillow
+google-cloud-bigquery
+google-auth
+cairosvg
+python-dateutil
