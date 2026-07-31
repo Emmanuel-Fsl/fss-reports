@@ -72,7 +72,7 @@ base AS (
       WHEN institution = 'PEZESHA'            AND min_days_in_arrears BETWEEN 91 AND 180  THEN '91-180'
       WHEN institution = 'PEZESHA'            AND min_days_in_arrears BETWEEN 181 AND 360 THEN '181-360'
       WHEN institution = 'PEZESHA'            AND min_days_in_arrears > 360               THEN '360+'
-      WHEN institution = 'VICTORY EMPOWERMENT' AND min_days_in_arrears <= 60              THEN '31-60'
+      WHEN institution = 'VICTORY EMPOWERMENT' AND min_days_in_arrears <= 60              THEN '0-60'
       WHEN institution = 'VICTORY EMPOWERMENT' AND min_days_in_arrears BETWEEN 61 AND 90  THEN '61-90'
       WHEN institution = 'VICTORY EMPOWERMENT' AND min_days_in_arrears > 90               THEN '91+'
       WHEN institution = 'NOLT'                AND min_days_in_arrears BETWEEN 31 AND 60  THEN '31-60'
@@ -87,7 +87,7 @@ base AS (
     CASE
       WHEN institution = 'VICTORY EMPOWERMENT' AND min_days_in_arrears > 90               THEN 0.3
       WHEN institution = 'VICTORY EMPOWERMENT' AND min_days_in_arrears BETWEEN 61 AND 90  THEN 0.25
-      WHEN institution = 'VICTORY EMPOWERMENT' AND min_days_in_arrears BETWEEN 31 AND 60  THEN 0.20
+      WHEN institution = 'VICTORY EMPOWERMENT' AND min_days_in_arrears <= 60              THEN 0.20
       WHEN institution = 'KUDA'                                                            THEN 0.3
       WHEN institution = 'SYCAMORE MFB'                                                   THEN 0.325
       WHEN institution = 'SHARA'                                                           THEN 0.25

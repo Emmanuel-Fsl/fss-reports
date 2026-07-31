@@ -12,10 +12,8 @@ import {
   WA_TARGET_PER_DAY,
   REACH_TARGET_PER_DAY,
   WEIGHT_CONTACT,
-  WEIGHT_PTP,
   WEIGHT_CONVERSION,
   WEIGHT_AMOUNT,
-  type AgentMode,
 }                                from '@/lib/reports/agent-performance'
 import type { ReportRow, ColumnDef } from '@/types'
 import clsx                      from 'clsx'
@@ -53,7 +51,6 @@ const MEDAL: Record<number, string> = { 1: '🥇', 2: '🥈', 3: '🥉' }
 interface AgentPerfSnapshot {
   rows:                  ReportRow[]
   fxRate:                number
-  mode:                  AgentMode
   dateFrom:              string
   dateTo:                string
   includedInstitutions:  string[]
@@ -189,7 +186,7 @@ function MetricChart({
 // currently-loaded (real) values — no BigQuery round-trip. Constants are
 // imported from the shared client-safe module so this can never drift from
 // what the server actually computes.
-type SimNumericKey = 'calls' | 'wa' | 'reach' | 'ptp' | 'converted' | 'amount' | 'contacted' | 'assigned'
+type SimNumericKey = 'calls' | 'wa' | 'reach' | 'ptp' | 'converted' | 'amount' | 'assigned'
 
 interface SimAgent {
   agent:     string
@@ -199,7 +196,6 @@ interface SimAgent {
   ptp:       number
   converted: number
   amount:    number
-  contacted: number
   assigned:  number
 }
 
@@ -208,11 +204,10 @@ function buildSimBaseline(rows: ReportRow[]): SimAgent[] {
     agent:     String(r.agent),
     calls:     parseMoney(r.total_calls),
     wa:        parseMoney(r.total_whatsapp),
-    reach:     parseMoney(r.total_reach_days),
+    reach:     parseMoney(r.reach_daily_avg),
     ptp:       parseMoney(r.total_ptp),
     converted: parseMoney(r.total_converted),
-    amount:    parseMoney(r.total_amount),
-    contacted: parseMoney(r.customers_contacted),
+    amount:    parseMoney(r.total_normalized_value),
     assigned:  parseMoney(r.amount_assigned),
   }))
 }
@@ -236,54 +231,51 @@ function rankDesc(values: number[]): number[] {
 
 interface SimResult {
   contactAtt:  number[]
-  ptpRate:     number[]
   convRate:    number[]
-  amtRate:     number[]
   weighted:    number[]
   overallRank: number[]
   contactRank: number[]
-  ptpRank:     number[]
   convRank:    number[]
   amtRank:     number[]
 }
 
+// PTP has no dimension score of its own (WEIGHT_PTP is 0) — a.ptp/a.converted
+// still matter here only because they drive convRate below, matching the
+// real query where PTP only participates in scoring via Conversion.
 function computeSim(agents: SimAgent[], workingDays: number): SimResult {
   const n = agents.length
-  const callTarget  = CALL_TARGET_PER_DAY  * workingDays
-  const waTarget    = WA_TARGET_PER_DAY    * workingDays
-  const reachTarget = REACH_TARGET_PER_DAY * workingDays
-
+  const callTarget = CALL_TARGET_PER_DAY * workingDays
+  const waTarget    = WA_TARGET_PER_DAY  * workingDays
+  // Reach is compared as a daily average against the flat daily target —
+  // not accumulated/scaled by working days like calls/whatsapp — since
+  // summing a "unique customers" figure across days isn't a real headcount.
   const contactAtt = agents.map(a => {
-    const c = callTarget  ? Math.min(1, a.calls / callTarget)  : 0
-    const w = waTarget    ? Math.min(1, a.wa    / waTarget)    : 0
-    const r = reachTarget ? Math.min(1, a.reach / reachTarget) : 0
+    const c = callTarget ? Math.min(1, a.calls / callTarget) : 0
+    const w = waTarget   ? Math.min(1, a.wa    / waTarget)   : 0
+    const r = Math.min(1, a.reach / REACH_TARGET_PER_DAY)
     return (c + w + r) / 3
   })
-  const ptpRate  = agents.map(a => a.contacted ? a.ptp / a.contacted : 0)
-  const convRate = agents.map(a => a.ptp       ? a.converted / a.ptp : 0)
-  const amtRate  = agents.map(a => a.assigned  ? a.amount / a.assigned : 0)
+  const convRate = agents.map(a => a.ptp ? a.converted / a.ptp : 0)
 
-  const ptpRateRank  = rankDesc(ptpRate)
-  const ptpVolRank   = rankDesc(agents.map(a => a.ptp))
   const convRateRank = rankDesc(convRate)
   const convVolRank  = rankDesc(agents.map(a => a.converted))
-  const amtRateRank  = rankDesc(amtRate)
-  const amtVolRank   = rankDesc(agents.map(a => a.amount))
+  // Amount is volume-rank only — a.amount is total_normalized_value (already
+  // a per-customer-normalized efficiency score), so there's no separate rate
+  // to blend in on top of it, same as the real query.
+  const amtVolRank = rankDesc(agents.map(a => a.amount))
 
   const dim = (rr: number, vr: number) => ((n - rr) / (n - 1) + (n - vr) / (n - 1)) / 2
-  const ptpDim  = agents.map((_, i) => dim(ptpRateRank[i],  ptpVolRank[i]))
   const convDim = agents.map((_, i) => dim(convRateRank[i], convVolRank[i]))
-  const amtDim  = agents.map((_, i) => dim(amtRateRank[i],  amtVolRank[i]))
+  const amtDim  = agents.map((_, i) => (n - amtVolRank[i]) / (n - 1))
 
   const weighted = agents.map((_, i) =>
-    WEIGHT_CONTACT * contactAtt[i] + WEIGHT_PTP * ptpDim[i] + WEIGHT_CONVERSION * convDim[i] + WEIGHT_AMOUNT * amtDim[i],
+    WEIGHT_CONTACT * contactAtt[i] + WEIGHT_CONVERSION * convDim[i] + WEIGHT_AMOUNT * amtDim[i],
   )
 
   return {
-    contactAtt, ptpRate, convRate, amtRate, weighted,
+    contactAtt, convRate, weighted,
     overallRank: rankDesc(weighted),
     contactRank: rankDesc(contactAtt),
-    ptpRank:     rankDesc(ptpDim),
     convRank:    rankDesc(convDim),
     amtRank:     rankDesc(amtDim),
   }
@@ -292,13 +284,12 @@ function computeSim(agents: SimAgent[], workingDays: number): SimResult {
 const SIM_CONTACT_FIELDS: { key: SimNumericKey; label: string }[] = [
   { key: 'calls', label: 'Calls' },
   { key: 'wa',    label: 'WhatsApp' },
-  { key: 'reach', label: 'Reach (contact-days)' },
+  { key: 'reach', label: 'Daily Reach (avg)' },
 ]
 const SIM_OUTCOME_FIELDS: { key: SimNumericKey; label: string; money?: boolean }[] = [
   { key: 'ptp',       label: 'PTPs' },
   { key: 'converted', label: 'Converted PTPs' },
-  { key: 'amount',    label: 'Amount recovered', money: true },
-  { key: 'contacted', label: 'Customers contacted' },
+  { key: 'amount',    label: 'Normalized Score' },
   { key: 'assigned',  label: 'Portfolio assigned',  money: true },
 ]
 
@@ -463,11 +454,10 @@ function AgentScoreSimulator({
               </div>
             </div>
 
-            <div className="mt-4 grid grid-cols-2 gap-2">
-              <SimStatChip label="Contact rank" rank={result.contactRank[selected]} sub={`${(result.contactAtt[selected] * 100).toFixed(1)}% attainment`} />
-              <SimStatChip label="PTP rank"      rank={result.ptpRank[selected]}     sub={`${(result.ptpRate[selected] * 100).toFixed(1)}% rate`} />
-              <SimStatChip label="Conv. rank"    rank={result.convRank[selected]}    sub={`${(result.convRate[selected] * 100).toFixed(1)}% rate`} />
-              <SimStatChip label="Amount rank"   rank={result.amtRank[selected]}     sub={`${(result.amtRate[selected] * 100).toFixed(1)}% recovery`} />
+            <div className="mt-4 grid grid-cols-3 gap-2">
+              <SimStatChip label="Contact"  weightPct={WEIGHT_CONTACT}    rank={result.contactRank[selected]} sub={`${(result.contactAtt[selected] * 100).toFixed(1)}% attainment`} />
+              <SimStatChip label="Conv."    weightPct={WEIGHT_CONVERSION} rank={result.convRank[selected]}    sub={`${(result.convRate[selected] * 100).toFixed(1)}% rate`} />
+              <SimStatChip label="Amount"   weightPct={WEIGHT_AMOUNT}     rank={result.amtRank[selected]}     sub={`${state[selected].amount.toFixed(2)} normalized score`} />
             </div>
           </div>
 
@@ -546,12 +536,18 @@ function SimSliderRow({
   )
 }
 
-function SimStatChip({ label, rank, sub }: { label: string; rank: number; sub: string }) {
+function SimStatChip({ label, weightPct, rank, sub }: { label: string; weightPct: number; rank: number; sub: string }) {
+  const noWeight = weightPct === 0
   return (
-    <div className="rounded-md border border-gray-200 bg-gray-50/60 px-3 py-2">
-      <div className="text-[9.5px] font-bold uppercase tracking-wide text-gray-400">{label}</div>
+    <div className={clsx('rounded-md border px-3 py-2', noWeight ? 'border-gray-100 bg-gray-50/30 opacity-50' : 'border-gray-200 bg-gray-50/60')}>
+      <div className="flex items-center justify-between">
+        <span className="text-[9.5px] font-bold uppercase tracking-wide text-gray-400">{label} rank</span>
+        <span className={clsx('font-mono text-[9px] font-bold tabular-nums', noWeight ? 'text-gray-300' : 'text-[#2E7D32]')}>
+          {(weightPct * 100).toFixed(0)}%
+        </span>
+      </div>
       <div className="mt-0.5 font-mono text-[15px] font-bold tabular-nums text-gray-900">#{rank}</div>
-      <div className="text-[10px] text-gray-400">{sub}</div>
+      <div className="text-[10px] text-gray-400">{noWeight ? "doesn't affect score" : sub}</div>
     </div>
   )
 }
@@ -569,7 +565,6 @@ export default function AgentPerformanceView() {
   const lastDay   = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
   const defTo     = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
 
-  const [mode,                 setMode]                 = useState<AgentMode>(c?.mode ?? 'recoveries')
   const [dateFrom,             setDateFrom]             = useState(c?.dateFrom ?? defFrom)
   const [dateTo,               setDateTo]               = useState(c?.dateTo   ?? defTo)
   const [includedInstitutions, setIncludedInstitutions] = useState<Set<string>>(
@@ -605,32 +600,31 @@ export default function AgentPerformanceView() {
     ...AGENT_EXTRA_COLUMNS.filter(c => activeExtra.has(c.key)),
   ]
 
-  // Pre-convert amounts to display currency (normalized_recovery is dimensionless — no conversion)
+  // Pre-convert currency fields to the display currency. total_normalized_value
+  // is dimensionless (no conversion) — left untouched.
   const displayRows = useMemo<ReportRow[]>(() => rows.map(row => ({
     ...row,
-    total_amount: mode === 'normalized_recovery'
-      ? parseMoney(row.total_amount)
-      : toDisplayAmount(parseMoney(row.total_amount), currency, fxRate),
-  })), [rows, currency, fxRate, mode])
+    total_amount_recovered: toDisplayAmount(parseMoney(row.total_amount_recovered), currency, fxRate),
+    total_revenue:          toDisplayAmount(parseMoney(row.total_revenue), currency, fxRate),
+    amount_assigned:        toDisplayAmount(parseMoney(row.amount_assigned), currency, fxRate),
+  })), [rows, currency, fxRate])
 
-  const topAgent   = rows.find(r => Number(r.overall_rank) === 1)
-  const totalAmnt  = useMemo(() =>
-    rows.reduce((s, r) => s + (mode === 'normalized_recovery'
-      ? parseMoney(r.total_amount)
-      : toDisplayAmount(parseMoney(r.total_amount), currency, fxRate)), 0),
-    [rows, currency, fxRate, mode],
+  const topAgent      = rows.find(r => Number(r.overall_rank) === 1)
+  const totalRecovered = useMemo(() =>
+    rows.reduce((s, r) => s + toDisplayAmount(parseMoney(r.total_amount_recovered), currency, fxRate), 0),
+    [rows, currency, fxRate],
   )
   const avgConv    = useMemo(() => {
     const valid = rows.filter(r => r.conversion_rate != null)
     return valid.length ? valid.reduce((s, r) => s + parseMoney(r.conversion_rate), 0) / valid.length : 0
   }, [rows])
-  const topPtp     = rows.reduce((best, r) =>
-    parseMoney(r.total_ptp) > parseMoney(best?.total_ptp) ? r : best, rows[0])
+  const topConverted = rows.reduce((best, r) =>
+    parseMoney(r.total_converted) > parseMoney(best?.total_converted) ? r : best, rows[0])
 
   const amountChartData = useMemo(() =>
     [...rows]
-      .sort((a, b) => parseMoney(b.total_amount) - parseMoney(a.total_amount))
-      .map(r => ({ label: String(r.agent), value: parseMoney(r.total_amount) })),
+      .sort((a, b) => parseMoney(b.total_amount_recovered) - parseMoney(a.total_amount_recovered))
+      .map(r => ({ label: String(r.agent), value: parseMoney(r.total_amount_recovered) })),
     [rows],
   )
 
@@ -656,7 +650,7 @@ export default function AgentPerformanceView() {
       const res = await fetch('/api/reports/agent-performance/run', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body:    JSON.stringify({ mode, dateFrom, dateTo, includedInstitutions: instList }),
+        body:    JSON.stringify({ dateFrom, dateTo, includedInstitutions: instList }),
       })
       if (!res.ok) throw new Error((await res.json()).error ?? 'Query failed')
       const data = await res.json()
@@ -665,13 +659,13 @@ export default function AgentPerformanceView() {
       setCurrency('NGN')
       setExecMs(data.executionMs)
       setHasData(true)
-      _cache = { rows: data.rows, fxRate: data.fxRate, mode, dateFrom, dateTo, includedInstitutions: instList, execMs: data.executionMs }
+      _cache = { rows: data.rows, fxRate: data.fxRate, dateFrom, dateTo, includedInstitutions: instList, execMs: data.executionMs }
     } catch (err: any) {
       setError(err.message)
     } finally {
       setLoading(false)
     }
-  }, [mode, dateFrom, dateTo, includedInstitutions])
+  }, [dateFrom, dateTo, includedInstitutions])
 
   // ── Reset ─────────────────────────────────────────────────────────────────
   function reset() {
@@ -691,11 +685,9 @@ export default function AgentPerformanceView() {
   async function handleExport() {
     if (!hasData) return
     const cols = visibleColumns.map(c =>
-      c.key === 'total_amount'
-        ? { ...c, label: mode === 'normalized_recovery' ? 'Norm. Recovery' : `Amount (${currency})` }
-        : c,
+      c.type === 'currency' ? { ...c, label: `${c.label} (${currency})` } : c,
     )
-    await downloadExcel(displayRows, cols, `agent_performance_${mode}_${dateFrom}`, 'Agent Performance')
+    await downloadExcel(displayRows, cols, `agent_performance_${dateFrom}`, 'Agent Performance')
   }
 
   // ── Institution multi-select helpers ─────────────────────────────────────
@@ -727,32 +719,10 @@ export default function AgentPerformanceView() {
         <div>
           <h1 className="text-[17px] font-bold tracking-tight text-gray-900">Agent Performance</h1>
           <p className="mt-0.5 text-xs text-gray-400">
-            Multi-dimensional agent rankings by {mode === 'recoveries' ? 'recovery amount' : mode === 'revenue' ? 'revenue' : 'normalized recovery'}
+            Multi-dimensional agent rankings by normalized recovery score
           </p>
         </div>
         <div className="flex items-center gap-3">
-          {/* Mode toggle */}
-          <div className="flex rounded-md border border-gray-200 p-0.5">
-            {([
-              { key: 'recoveries',          label: 'Recoveries'  },
-              { key: 'revenue',             label: 'Revenue'     },
-              { key: 'normalized_recovery', label: 'Normalized'  },
-            ] as { key: AgentMode; label: string }[]).map(m => (
-              <button
-                key={m.key}
-                onClick={() => setMode(m.key)}
-                className={clsx(
-                  'rounded px-3 py-1 text-xs font-semibold transition',
-                  mode === m.key
-                    ? 'bg-[#2E7D32] text-white'
-                    : 'text-gray-500 hover:bg-gray-100',
-                )}
-              >
-                {m.label}
-              </button>
-            ))}
-          </div>
-          <div className="h-5 w-px bg-gray-200" />
           {/* Report / What-If toggle */}
           <div className="flex rounded-md border border-gray-200 p-0.5">
             {([
@@ -818,7 +788,7 @@ export default function AgentPerformanceView() {
             </div>
           </div>
 
-          {/* Institution filter — only meaningful in revenue mode */}
+          {/* Institution filter */}
           <div className="h-9 w-px self-end bg-gray-200" />
           <div ref={instDropdownRef} className="relative flex flex-col">
             <label className={labelCls}>Institutions</label>
@@ -873,12 +843,10 @@ export default function AgentPerformanceView() {
             {/* Stats bar */}
             <div className="flex flex-shrink-0 flex-wrap items-center gap-6 border-b border-gray-200 bg-white px-7 py-3">
               {[
-                { label: 'Top Agent',      value: String(topAgent?.agent ?? '—') },
-                { label: mode === 'normalized_recovery' ? 'Total Norm. Recovery' : 'Total Amount',
-                  value: mode === 'normalized_recovery' ? totalAmnt.toFixed(2) : fmtAmount(totalAmnt, currency),
-                  green: true },
-                { label: 'Avg Conv. Rate', value: fmtPct(avgConv) },
-                { label: 'Top PTP',        value: `${topPtp?.agent ?? '—'} · ${fmtNum(parseMoney(topPtp?.total_ptp))}` },
+                { label: 'Top Agent',           value: String(topAgent?.agent ?? '—') },
+                { label: 'Total Amount Recovered', value: fmtAmount(totalRecovered, currency), green: true },
+                { label: 'Avg Conv. Rate',      value: fmtPct(avgConv) },
+                { label: 'Top Converted PTPs',  value: `${topConverted?.agent ?? '—'} · ${fmtNum(parseMoney(topConverted?.total_converted))}` },
               ].map((item, i) => (
                 <div key={item.label} className="flex items-center gap-6">
                   {i > 0 && <div className="h-8 w-px bg-gray-200" />}
@@ -892,8 +860,8 @@ export default function AgentPerformanceView() {
               ))}
             </div>
 
-            {/* Currency banner + toggle — hidden for normalized_recovery (dimensionless) */}
-            <div className={clsx('flex flex-shrink-0 items-center justify-between border-b border-blue-100 bg-blue-50 px-7 py-2', mode === 'normalized_recovery' && 'hidden')}>
+            {/* Currency banner + toggle */}
+            <div className="flex flex-shrink-0 items-center justify-between border-b border-blue-100 bg-blue-50 px-7 py-2">
               <p className="text-xs text-blue-600">
                 All amounts in <strong>{currency}</strong>
                 <span className="ml-1.5 text-blue-400">
@@ -924,11 +892,10 @@ export default function AgentPerformanceView() {
                 <div className="grid grid-cols-1 gap-4 px-7 py-4 lg:grid-cols-2">
                 <BarChart
                   data={amountChartData}
-                  currency={mode === 'normalized_recovery' ? 'NGN' : currency}
-                  fxRate={mode === 'normalized_recovery' ? 1 : fxRate}
-                  title={mode === 'recoveries' ? 'Amount Recovered by Agent' : mode === 'revenue' ? 'Revenue by Agent' : 'Normalized Recovery by Agent'}
+                  currency={currency}
+                  fxRate={fxRate}
+                  title="Amount Recovered by Agent"
                   color="#2E7D32"
-                  ratio={mode === 'normalized_recovery'}
                 />
                 <MetricChart
                   data={metricChartData}
@@ -969,7 +936,7 @@ export default function AgentPerformanceView() {
                 rows={rows}
                 dateFrom={dateFrom}
                 dateTo={dateTo}
-                formatAmount={v => mode === 'normalized_recovery' ? v.toFixed(3) : fmtAmount(toDisplayAmount(v, currency, fxRate), currency)}
+                formatAmount={v => fmtAmount(toDisplayAmount(v, currency, fxRate), currency)}
               />
             )}
         </>
@@ -988,9 +955,7 @@ export default function AgentPerformanceView() {
                       col.type === 'currency' || col.type === 'num' ? 'text-right' : 'text-left',
                     )}
                   >
-                    {col.key === 'total_amount'
-                      ? mode === 'normalized_recovery' ? 'Norm. Recovery' : `Amount (${currency})`
-                      : col.label}
+                    {col.type === 'currency' ? `${col.label} (${currency})` : col.label}
                   </th>
                 ))}
               </tr>
@@ -1010,11 +975,11 @@ export default function AgentPerformanceView() {
                       display = `${MEDAL[rank] ?? ''} ${raw ?? ''}`.trim()
                     } else if (col.key === 'overall_rank') {
                       display = `#${raw ?? ''}`
-                    } else if (col.key === 'total_amount' && mode === 'normalized_recovery') {
+                    } else if (col.key === 'total_normalized_value') {
                       display = raw != null ? parseMoney(raw).toFixed(3) : '—'
                     } else if (col.type === 'currency') {
                       display = raw != null ? fmtAmount(parseMoney(raw), currency) : '—'
-                    } else if (['conversion_rate', 'contact_attainment', 'ptp_rate', 'recovery_rate', 'reach_attainment'].includes(col.key)) {
+                    } else if (['conversion_rate', 'contact_attainment', 'recovery_rate', 'reach_attainment'].includes(col.key)) {
                       display = fmtPct(parseMoney(raw))
                     } else if (col.key === 'weighted_score') {
                       display = raw != null ? (parseMoney(raw) * 100).toFixed(1) + '%' : '—'
@@ -1060,8 +1025,7 @@ export default function AgentPerformanceView() {
         <p className="text-xs text-gray-400">
           {hasData ? (
             <>
-              <strong className="text-gray-900">{rows.length}</strong> agents &nbsp;·&nbsp;
-              <strong className="capitalize text-gray-900">{mode}</strong> mode
+              <strong className="text-gray-900">{rows.length}</strong> agents
               {execMs != null && <> &nbsp;·&nbsp; <span className="font-mono">{execMs}ms</span></>}
             </>
           ) : '—'}

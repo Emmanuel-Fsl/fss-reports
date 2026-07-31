@@ -1,13 +1,13 @@
 // SERVER-ONLY — never imported by client components.
 import {
   CALL_TARGET_PER_DAY, WA_TARGET_PER_DAY, REACH_TARGET_PER_DAY,
-  WEIGHT_CONTACT, WEIGHT_PTP, WEIGHT_CONVERSION, WEIGHT_AMOUNT,
+  WEIGHT_CONTACT, WEIGHT_CONVERSION, WEIGHT_AMOUNT,
 } from './agent-performance'
 
 export interface AgentPerfFilters {
   dateFrom:              string
   dateTo:                string
-  includedInstitutions?: string[]   // revenue mode only — empty = all
+  includedInstitutions?: string[]   // empty = all institutions
 }
 
 // FX rate query — returns 1 row: { ngn_per_unit: number }
@@ -42,7 +42,7 @@ function buildInstFilter(includedInstitutions?: string[]): string {
   return `AND institution IN (${[...expanded].map(i => `'${i}'`).join(', ')})`
 }
 
-// Shared date-bound CTEs used by both queries.
+// Shared date-bound CTEs used by the query.
 // All PTP logic lives here and resolves to a single ptp_summary CTE;
 // per-agent CTEs are completely PTP-free.
 function sharedCtePrologue(df: string, dt: string, instFilter: string): string {
@@ -212,7 +212,7 @@ ptp_awarded AS (
   FROM final_assignment
 ),
 
--- Individual awarded records — used for payment attribution in both query modes
+-- Individual awarded records — used for payment attribution
 ptp_awarded_records AS (
   SELECT phone, institution, agent, contact_date, ptp_date, window_end, converted
   FROM ptp_awarded
@@ -282,12 +282,55 @@ conversion_rate AS (
 )`
 }
 
-// Builds the payment attribution CTEs for the recoveries query.
+// Per-row commission rate used to compute revenue from a raw deposit amount —
+// institution- and arrears-bucket-specific. Same rates as the Billing report.
+const COMMISSION_RATE_EXPR = `CASE
+          WHEN institution IN ('NUMIDA', 'NUMIDA ARCHIVED') AND min_days_in_arrears > 90               THEN 0.3
+          WHEN institution IN ('NUMIDA', 'NUMIDA ARCHIVED') AND min_days_in_arrears BETWEEN 61 AND 90  THEN 0.15
+          WHEN institution IN ('REMEDIAL HEALTH', 'REMEDIAL ARCHIVED',
+                                 'KESSINGTON', 'KESSINGTON ARCHIVED')                                    THEN 0.175
+          WHEN institution = 'VICTORY EMPOWERMENT' AND min_days_in_arrears > 90                        THEN 0.3
+          WHEN institution = 'VICTORY EMPOWERMENT' AND min_days_in_arrears BETWEEN 61 AND 90           THEN 0.25
+          WHEN institution = 'VICTORY EMPOWERMENT' AND min_days_in_arrears <= 60                       THEN 0.20
+          WHEN institution = 'KUDA'                                                                     THEN 0.3
+          WHEN institution = 'SYCAMORE MFB'                                                             THEN 0.325
+          WHEN institution = 'SHARA'                                                                     THEN 0.25
+          WHEN institution = 'GROOMING MFI' AND date >= '2026-04-01'                                    THEN 0.195
+          WHEN institution = 'GROOMING MFI'                                                             THEN 0.25
+          WHEN institution = 'GROOMING MFB' AND min_days_in_arrears > 90                                THEN 0.215
+          WHEN institution = 'GROOMING MFB' AND min_days_in_arrears BETWEEN 61 AND 90                   THEN 0.175
+          WHEN institution = 'GROOMING MFB' AND min_days_in_arrears BETWEEN 31 AND 60                   THEN 0.10
+          WHEN institution = 'ROSABON'                                                                   THEN 0.135
+          WHEN institution = 'LAPO'                                                                      THEN 0.10
+          WHEN institution = 'LUKEFIELD'                                                                 THEN 0.2
+          WHEN institution = 'NOLT' AND min_days_in_arrears > 180                                       THEN 0.30
+          WHEN institution = 'NOLT' AND min_days_in_arrears BETWEEN 91 AND 180                          THEN 0.20
+          WHEN institution = 'NOLT' AND min_days_in_arrears BETWEEN 61 AND 90                           THEN 0.175
+          WHEN institution = 'NOLT' AND min_days_in_arrears BETWEEN 31 AND 60                           THEN 0.15
+          WHEN institution = 'PEZESHA' AND min_days_in_arrears > 360                                    THEN 0.25
+          WHEN institution = 'PEZESHA' AND min_days_in_arrears BETWEEN 181 AND 360                      THEN 0.2
+          WHEN institution = 'PEZESHA' AND min_days_in_arrears BETWEEN 91 AND 180                       THEN 0.15
+          WHEN institution = 'CREDIT DIRECT' AND min_days_in_arrears > 90                               THEN 0.15
+          WHEN institution = 'CREDIT DIRECT' AND min_days_in_arrears BETWEEN 31 AND 90                  THEN 0.10
+          WHEN institution = 'RENMONEY' AND date > '2026-06-11'                                         THEN 0.125
+          WHEN institution = 'RENMONEY'                                                                  THEN 0.15
+          WHEN institution = 'MAINSTREET'                                                                THEN 0.25
+          WHEN institution = 'AB MFB'                                                                    THEN 0.25
+          WHEN institution = 'BAOBAB'                                                                    THEN 0.25
+          ELSE 0
+        END`
+
+// FX multiplier applied to KES-native institutions only.
+const FX_MULTIPLIER_EXPR = `CASE WHEN institution IN ('NUMIDA', 'NUMIDA ARCHIVED', 'PEZESHA') THEN fx.ngn_per_unit ELSE 1 END`
+
+// Builds the payment attribution CTEs, shared across all three amount flavors
+// (raw amount recovered, revenue, normalized value) — attribution only depends
+// on contact history and PTP windows, never on which dollar-flavor is summed,
+// so there's exactly one attribution pass instead of three.
 // Priority: (1) PTP agent whose window covers the payment, earliest contact wins.
 //           (2) Last agent to contact the client on or before the payment date.
 //           (3) Alphabetically first agent name on a same-day tie.
-// normalized=true: agent_recoveries sums (deposit / total_value_of_lead) ratios instead of raw NGN amounts.
-function buildRecoveryAttributionCtes(df: string, dt: string, instFilter: string, normalized = false): string {
+function buildUnifiedAttributionCtes(df: string, dt: string, instFilter: string): string {
   const contactUnion = AGENTS.map(a => `
   SELECT client_id, phone, institution, date, '${a.lower}' AS agent
   FROM \`fssspark.recovery_methods_data.recovery_dashboard_daily_table\`
@@ -300,15 +343,21 @@ function buildRecoveryAttributionCtes(df: string, dt: string, instFilter: string
 contact_log AS (${contactUnion}
 ),
 
--- All payment rows in the period
+-- All payment rows in the period, with FX-adjusted amount and revenue
+-- (commission) pre-computed per row — daily_deposit_all_op itself stays raw
+-- and unconverted, since the normalized-value calc below deliberately uses
+-- the raw figure (no FX applied there, matching how it's always worked).
 payments_in_period AS (
   SELECT
     client_id,
     phone,
     date AS payment_date,
     institution,
-    daily_deposit_all_op
+    daily_deposit_all_op,
+    daily_deposit_all_op * ${FX_MULTIPLIER_EXPR} AS amount_ngn,
+    daily_deposit_all_op * ${FX_MULTIPLIER_EXPR} * ${COMMISSION_RATE_EXPR} AS revenue_ngn
   FROM \`fssspark.recovery_methods_data.recovery_dashboard_daily_table\`
+  CROSS JOIN conversion_rate fx
   WHERE daily_deposit_all_op > 0
     AND date BETWEEN '${df}' AND '${dt}'
     ${instFilter}
@@ -322,6 +371,8 @@ payment_contact_ranked AS (
     p.payment_date,
     p.institution,
     p.daily_deposit_all_op,
+    p.amount_ngn,
+    p.revenue_ngn,
     cl.agent AS last_touch_agent,
     ROW_NUMBER() OVER (
       PARTITION BY p.client_id, p.phone, p.institution, p.payment_date
@@ -337,7 +388,7 @@ payment_contact_ranked AS (
 
 -- Keep only the top-ranked (most recent) contact per payment
 payment_with_last_touch AS (
-  SELECT client_id, phone, payment_date, institution, daily_deposit_all_op, last_touch_agent
+  SELECT client_id, phone, payment_date, institution, daily_deposit_all_op, amount_ngn, revenue_ngn, last_touch_agent
   FROM payment_contact_ranked
   WHERE rn = 1
 ),
@@ -366,19 +417,23 @@ payment_attribution AS (
     payment_date,
     institution,
     daily_deposit_all_op,
+    amount_ngn,
+    revenue_ngn,
     COALESCE(ptp_agent, last_touch_agent) AS attributed_agent
   FROM payment_ptp_ranked
   WHERE rn = 1
 ),
 
--- Sum attributed payments per agent
-agent_recoveries AS (${normalized ? `
-  -- Normalized: sum(deposit / lead_value) per attributed payment.
-  -- total_value_of_lead is constant per customer so we take MAX to get one row
-  -- per (client_id, phone, institution) — avoids any fan-out from the date join.
+-- Sum all three amount flavors per agent from the same attributed payments.
+-- total_value_of_lead is constant per customer (looked up across the whole
+-- table, not date-bounded) so we take MAX to get one row per
+-- (client_id, phone, institution) — avoids any fan-out from the date join.
+agent_recoveries AS (
   SELECT
-    pa.attributed_agent AS agent,
-    SUM(SAFE_DIVIDE(pa.daily_deposit_all_op, lead_vals.tvol)) AS total_amount
+    pa.attributed_agent                                             AS agent,
+    SUM(pa.amount_ngn)                                               AS total_amount_recovered,
+    SUM(pa.revenue_ngn)                                              AS total_revenue,
+    SUM(SAFE_DIVIDE(pa.daily_deposit_all_op, lead_vals.tvol))        AS total_normalized_value
   FROM payment_attribution pa
   LEFT JOIN (
     SELECT client_id, phone, institution, MAX(total_value_of_lead) AS tvol
@@ -389,26 +444,16 @@ agent_recoveries AS (${normalized ? `
     AND lead_vals.phone       = pa.phone
     AND lead_vals.institution = pa.institution
   WHERE pa.attributed_agent IS NOT NULL
-  GROUP BY pa.attributed_agent` : `
-  -- Raw NGN amounts with KES→NGN FX conversion for Kenya institutions
-  SELECT
-    attributed_agent AS agent,
-    SUM(CASE
-      WHEN institution IN ('NUMIDA', 'NUMIDA ARCHIVED', 'PEZESHA')
-        THEN daily_deposit_all_op * fx.ngn_per_unit
-      ELSE daily_deposit_all_op
-    END) AS total_amount
-  FROM payment_attribution
-  CROSS JOIN conversion_rate fx
-  WHERE attributed_agent IS NOT NULL
-  GROUP BY attributed_agent`}
+  GROUP BY pa.attributed_agent
 )`
 }
 
-// Generates the per-agent metric CTE for the recoveries query.
-// total_amount is a scalar pull from agent_recoveries (full attribution logic).
-// Calls, whatsapp, customers_contacted are aggregated directly from the raw table.
-function recoveryAgentCtePair(lname: string, df: string, dt: string, instFilter: string): string {
+// Generates the per-agent metric CTE. All three amount flavors are scalar
+// pulls from agent_recoveries (the single, shared attribution pass above).
+// Calls, WhatsApp, customers_contacted, reach are aggregated directly from
+// the raw table — identical for all three amount flavors, since none of them
+// change who contacted whom.
+function agentCtePair(lname: string, df: string, dt: string, instFilter: string): string {
   const lc = lname.toLowerCase()
   return `
 ${lc}_metrics AS (
@@ -419,7 +464,9 @@ ${lc}_metrics AS (
       ELSE d.${lc}_call_logged
     END)                   AS total_calls,
     SUM(d.${lc}_whatsapp)  AS total_whatsapp,
-    (SELECT COALESCE(ar.total_amount, 0) FROM agent_recoveries ar WHERE ar.agent = '${lc}') AS total_amount,
+    (SELECT COALESCE(ar.total_amount_recovered, 0) FROM agent_recoveries ar WHERE ar.agent = '${lc}') AS total_amount_recovered,
+    (SELECT COALESCE(ar.total_revenue, 0)          FROM agent_recoveries ar WHERE ar.agent = '${lc}') AS total_revenue,
+    (SELECT COALESCE(ar.total_normalized_value, 0) FROM agent_recoveries ar WHERE ar.agent = '${lc}') AS total_normalized_value,
     COUNT(DISTINCT CASE
       WHEN d.${lc}_call > 0 OR d.${lc}_call_inbound > 0 OR d.${lc}_call_logged > 0 OR d.${lc}_whatsapp > 0
         THEN d.client_id
@@ -452,141 +499,6 @@ ${lc}_metrics AS (
 )`
 }
 
-// Builds the payment attribution CTEs for the revenue query.
-// Same last-touch + PTP-priority logic as recovery, but uses revenue_base
-// (which already has daily_revenue = deposit × profit_rate × FX) as the payment source.
-function buildRevenueAttributionCtes(_df: string, _dt: string, _instFilter: string): string {
-  const contactUnion = AGENTS.map(a => `
-  SELECT client_id, phone, institution, date, '${a.lower}' AS agent
-  FROM revenue_base
-  WHERE ${a.lower}_call > 0 OR ${a.lower}_call_inbound > 0 OR ${a.lower}_call_logged > 0 OR ${a.lower}_whatsapp > 0`).join('\n  UNION ALL')
-
-  return `
--- One row per (client, institution, date, agent) where that agent had any contact activity
-rev_contact_log AS (${contactUnion}
-),
-
--- All payment rows in the period (daily_revenue already includes FX + profit rate)
-rev_payments_in_period AS (
-  SELECT
-    client_id,
-    phone,
-    date AS payment_date,
-    institution,
-    daily_revenue AS payment_amount
-  FROM revenue_base
-  WHERE daily_revenue > 0
-),
-
--- Rank all contacts on or before each payment date (most recent first, alphabet tiebreaker)
-rev_payment_contact_ranked AS (
-  SELECT
-    p.client_id,
-    p.phone,
-    p.payment_date,
-    p.institution,
-    p.payment_amount,
-    cl.agent AS last_touch_agent,
-    ROW_NUMBER() OVER (
-      PARTITION BY p.client_id, p.phone, p.institution, p.payment_date
-      ORDER BY cl.date DESC, cl.agent ASC
-    ) AS rn
-  FROM rev_payments_in_period p
-  LEFT JOIN rev_contact_log cl
-    ON  cl.client_id   = p.client_id
-    AND cl.phone       = p.phone
-    AND cl.institution = p.institution
-    AND cl.date        <= p.payment_date
-),
-
--- Keep only the top-ranked (most recent) contact per payment
-rev_payment_with_last_touch AS (
-  SELECT client_id, phone, payment_date, institution, payment_amount, last_touch_agent
-  FROM rev_payment_contact_ranked
-  WHERE rn = 1
-),
-
--- Rank any PTP windows covering each payment (earliest contact_date wins)
-rev_payment_ptp_ranked AS (
-  SELECT
-    p.*,
-    par.agent AS ptp_agent,
-    ROW_NUMBER() OVER (
-      PARTITION BY p.client_id, p.phone, p.institution, p.payment_date
-      ORDER BY par.contact_date ASC, par.agent ASC
-    ) AS rn
-  FROM rev_payment_with_last_touch p
-  LEFT JOIN ptp_awarded_records par
-    ON  par.phone        = p.phone
-    AND par.institution  = p.institution
-    AND p.payment_date BETWEEN par.contact_date AND par.window_end
-),
-
--- PTP agent takes priority over last touch; keep one row per payment
-rev_payment_attribution AS (
-  SELECT
-    client_id,
-    phone,
-    payment_date,
-    institution,
-    payment_amount,
-    COALESCE(ptp_agent, last_touch_agent) AS attributed_agent
-  FROM rev_payment_ptp_ranked
-  WHERE rn = 1
-),
-
--- Sum attributed revenue per agent (FX + profit rate already baked into payment_amount)
-rev_agent_recoveries AS (
-  SELECT
-    attributed_agent AS agent,
-    SUM(payment_amount) AS total_amount
-  FROM rev_payment_attribution
-  WHERE attributed_agent IS NOT NULL
-  GROUP BY attributed_agent
-)`
-}
-
-// Generates the per-agent metric CTE for the revenue query.
-// total_amount is a scalar pull from rev_agent_recoveries (full attribution logic).
-// Calls, whatsapp, customers_contacted are aggregated directly from revenue_base.
-function revenueAgentCtePair(lname: string): string {
-  const lc = lname.toLowerCase()
-  return `
-${lc}_metrics AS (
-  SELECT
-    SUM(CASE
-      WHEN d.${lc}_call > 0 OR d.${lc}_call_inbound > 0
-        THEN d.${lc}_call + d.${lc}_call_inbound
-      ELSE d.${lc}_call_logged
-    END)                   AS total_calls,
-    SUM(d.${lc}_whatsapp)  AS total_whatsapp,
-    (SELECT COALESCE(ar.total_amount, 0) FROM rev_agent_recoveries ar WHERE ar.agent = '${lc}') AS total_amount,
-    COUNT(DISTINCT CASE
-      WHEN d.${lc}_call > 0 OR d.${lc}_call_inbound > 0 OR d.${lc}_call_logged > 0 OR d.${lc}_whatsapp > 0
-        THEN d.client_id
-    END)                   AS customers_contacted,
-    -- Portfolio value of clients this agent contacted — denominator for recovery_rate.
-    (SELECT COALESCE(SUM(t.assigned), 0) FROM (
-      SELECT client_id, MAX(total_assigned_amount_due) AS assigned
-      FROM revenue_base d2
-      WHERE d2.${lc}_call > 0 OR d2.${lc}_call_inbound > 0 OR d2.${lc}_call_logged > 0 OR d2.${lc}_whatsapp > 0
-      GROUP BY client_id
-    ) t)                   AS amount_assigned,
-    -- Sum of distinct-clients-contacted-per-day (a client contacted on 2
-    -- different days counts twice) — denominator match for REACH_TARGET_PER_DAY,
-    -- kept separate from customers_contacted (a period-level unique headcount).
-    (SELECT SUM(daily_reach) FROM (
-      SELECT COUNT(DISTINCT CASE
-        WHEN d3.${lc}_call > 0 OR d3.${lc}_call_inbound > 0 OR d3.${lc}_call_logged > 0 OR d3.${lc}_whatsapp > 0
-          THEN d3.client_id
-      END) AS daily_reach
-      FROM revenue_base d3
-      GROUP BY d3.date
-    ))                     AS total_reach_days
-  FROM revenue_base d
-)`
-}
-
 const AGENTS: Array<{ display: string; lower: string }> = [
   { display: 'Kesta',      lower: 'kesta'      },
   { display: 'Dami',       lower: 'dami'       },
@@ -610,40 +522,28 @@ function workingDaysExpr(df: string, dt: string): string {
   return `(SELECT COUNT(*) FROM UNNEST(GENERATE_DATE_ARRAY(DATE('${df}'), DATE('${dt}'))) AS wd WHERE EXTRACT(DAYOFWEEK FROM wd) NOT IN (1, 7))`
 }
 
-// Final SELECT + scoring — same for both modes.
+// Final SELECT + scoring.
 // ptp_summary (built in sharedCtePrologue) is joined here by agent name.
 //
-// Scoring redesign: each of the three funnel dimensions (PTP, Conversion,
-// Amount) blends a RATE (skill/efficiency — RANK-based, since "what's a good
-// rate" is inherently relative to peers) with its raw VOLUME counterpart
-// (RANK-based too), 50/50. This means a tiny, easily-perfected sample (e.g.
-// 8 PTPs, all 8 paid) can't top the leaderboard on rate alone — its low
-// volume-rank holds it back — and a huge-portfolio agent with a mediocre
-// rate can't top it on volume alone either. Contact (calls/WhatsApp) is
-// different: it's an EFFORT metric an agent can just decide to do more of,
-// so it gets a fixed, achievable TARGET-ATTAINMENT score instead of ranking
-// against peers or a shifting team total.
-// amountAlreadyNormalized: true for the normalized_recovery mode, where
-// total_amount is already a per-customer-normalized (deposit ÷ lead value)
-// efficiency score rather than raw currency. Dividing that by amount_assigned
-// (always raw currency) would mix units and produce a meaningless rate, so in
-// that mode we skip the rate half entirely and score Amount on its volume
-// rank alone — total_amount there is already "normalized", just upstream of
-// this scoring step instead of inside it.
-function finalSelect(df: string, dt: string, amountAlreadyNormalized = false): string {
+// Scoring redesign: Conversion blends a RATE (skill/efficiency — RANK-based,
+// since "what's a good rate" is inherently relative to peers) with its raw
+// VOLUME counterpart (RANK-based too), 50/50. This means a tiny,
+// easily-perfected sample (e.g. 8 PTPs, all 8 paid) can't top the leaderboard
+// on rate alone — its low volume-rank holds it back — and a huge-portfolio
+// agent with a mediocre rate can't top it on volume alone either. Contact
+// (calls/WhatsApp/reach) is different: it's an EFFORT metric an agent can
+// just decide to do more of, so it gets a fixed, achievable TARGET-ATTAINMENT
+// score instead of ranking against peers or a shifting team total. Amount is
+// scored on total_normalized_value alone (rank-based, volume only) — it's
+// already a per-customer-normalized (deposit ÷ lead value) efficiency score,
+// so there's no separate "rate" to blend in on top of it. PTP (total_ptp/
+// total_converted/conversion_rate) has no dimension score of its own — it
+// only participates in scoring via the Conversion dimension above.
+function finalSelect(df: string, dt: string): string {
   const unionAll = AGENTS.map(a =>
     `SELECT '${a.display}' AS agent, m.* FROM ${a.lower}_metrics m`
   ).join('\nUNION ALL\n  ')
   const workingDays = workingDaysExpr(df, dt)
-  const recoveryRateExpr = amountAlreadyNormalized
-    ? 'CAST(NULL AS FLOAT64)'
-    : 'SAFE_DIVIDE(total_amount, amount_assigned)'
-  const amountRateRankExpr = amountAlreadyNormalized
-    ? 'CAST(NULL AS INT64)'
-    : 'RANK() OVER (ORDER BY recovery_rate DESC)'
-  const amountDimensionScoreExpr = amountAlreadyNormalized
-    ? `(${N} - amount_volume_rank) / ${N - 1}.0`
-    : `((${N} - amount_rate_rank) / ${N - 1}.0 + (${N} - amount_volume_rank) / ${N - 1}.0) / 2`
 
   return `
 final AS (
@@ -669,12 +569,18 @@ with_metrics AS (
     *,
     ROUND(${CALL_TARGET_PER_DAY}  * ${workingDays}) AS call_target,
     ROUND(${WA_TARGET_PER_DAY}    * ${workingDays}) AS wa_target,
-    ROUND(${REACH_TARGET_PER_DAY} * ${workingDays}) AS reach_target,
+    -- Reach target/avg are shown as flat daily figures, not accumulated
+    -- totals — unlike a call (a discrete, repeatable event that's honestly
+    -- additive), "unique customers contacted" summed across days isn't a
+    -- real customer count (the same client on 2 different days adds 2, not
+    -- 1) and reads as confusingly close to customers_contacted (the true
+    -- distinct headcount). A daily average sidesteps that confusion.
+    ROUND(${REACH_TARGET_PER_DAY}, 1) AS reach_target,
+    ROUND(SAFE_DIVIDE(total_reach_days, ${workingDays}), 1) AS reach_daily_avg,
     LEAST(1.0, SAFE_DIVIDE(total_calls,      ${CALL_TARGET_PER_DAY}  * ${workingDays})) AS call_attainment,
     LEAST(1.0, SAFE_DIVIDE(total_whatsapp,   ${WA_TARGET_PER_DAY}    * ${workingDays})) AS wa_attainment,
     LEAST(1.0, SAFE_DIVIDE(total_reach_days, ${REACH_TARGET_PER_DAY} * ${workingDays})) AS reach_attainment,
-    SAFE_DIVIDE(total_ptp, customers_contacted) AS ptp_rate,
-    ${recoveryRateExpr} AS recovery_rate
+    SAFE_DIVIDE(total_amount_recovered, amount_assigned)            AS recovery_rate
   FROM final_with_ptp
 ),
 
@@ -688,29 +594,28 @@ with_contact AS (
 -- Individual rate-rank / volume-rank per dimension, computed once here so
 -- they can both feed weighted_score below AND be exposed as their own
 -- output columns (for transparency into what's driving each agent's score).
+-- PTP has no dimension score at all — WEIGHT_PTP is 0, so there's nothing to
+-- rank; total_ptp/total_converted/conversion_rate still feed Conversion below.
+-- Amount only has a volume rank — see comment above finalSelect.
 ranked AS (
   SELECT
     *,
-    RANK() OVER (ORDER BY ptp_rate        DESC) AS ptp_rate_rank,
-    RANK() OVER (ORDER BY total_ptp       DESC) AS ptp_volume_rank,
-    RANK() OVER (ORDER BY conversion_rate DESC) AS conversion_rate_rank,
-    RANK() OVER (ORDER BY total_converted DESC) AS conversion_volume_rank,
-    ${amountRateRankExpr} AS amount_rate_rank,
-    RANK() OVER (ORDER BY total_amount    DESC) AS amount_volume_rank
+    RANK() OVER (ORDER BY conversion_rate        DESC) AS conversion_rate_rank,
+    RANK() OVER (ORDER BY total_converted        DESC) AS conversion_volume_rank,
+    RANK() OVER (ORDER BY total_normalized_value DESC) AS amount_volume_rank
   FROM with_contact
 ),
 
 -- Each dimension's own 0-1 blended score (same rate+volume blend used in
 -- weighted_score below), so it can be ranked on its own as a single
--- per-metric rank — the "PTP Rank" / "Conversion Rank" / "Amount Rank" a
--- viewer would expect, reflecting the new fairer blend underneath instead of
--- a single raw metric.
+-- per-metric rank — the "Conversion Rank" / "Amount Rank" a viewer would
+-- expect, reflecting the new fairer blend underneath instead of a single raw
+-- metric.
 scored AS (
   SELECT
     *,
-    ((${N} - ptp_rate_rank)   / ${N - 1}.0 + (${N} - ptp_volume_rank)   / ${N - 1}.0) / 2 AS ptp_dimension_score,
     ((${N} - conversion_rate_rank) / ${N - 1}.0 + (${N} - conversion_volume_rank) / ${N - 1}.0) / 2 AS conversion_dimension_score,
-    ${amountDimensionScoreExpr} AS amount_dimension_score
+    (${N} - amount_volume_rank) / ${N - 1}.0 AS amount_dimension_score
   FROM ranked
 ),
 
@@ -719,7 +624,6 @@ weighted AS (
     *,
     (
       ${WEIGHT_CONTACT} * contact_attainment +
-      ${WEIGHT_PTP} * ptp_dimension_score +
       ${WEIGHT_CONVERSION} * conversion_dimension_score +
       ${WEIGHT_AMOUNT} * amount_dimension_score
     ) AS weighted_score
@@ -730,7 +634,6 @@ dim_ranked AS (
   SELECT
     *,
     RANK() OVER (ORDER BY contact_attainment         DESC) AS contact_rank,
-    RANK() OVER (ORDER BY ptp_dimension_score        DESC) AS ptp_rank,
     RANK() OVER (ORDER BY conversion_dimension_score DESC) AS conversion_rank,
     RANK() OVER (ORDER BY amount_dimension_score      DESC) AS amount_rank
   FROM weighted
@@ -743,25 +646,23 @@ SELECT
   call_target,
   wa_target,
   total_reach_days,
+  reach_daily_avg,
   reach_target,
   reach_attainment,
   total_ptp,
   total_converted,
-  total_amount,
+  total_normalized_value,
+  total_amount_recovered,
+  total_revenue,
   customers_contacted,
   amount_assigned,
   contact_attainment,
-  ptp_rate,
   conversion_rate,
   recovery_rate,
-  ptp_rate_rank,
-  ptp_volume_rank,
   conversion_rate_rank,
   conversion_volume_rank,
-  amount_rate_rank,
   amount_volume_rank,
   contact_rank,
-  ptp_rank,
   conversion_rank,
   amount_rank,
 
@@ -772,93 +673,16 @@ FROM dim_ranked
 ORDER BY overall_rank`
 }
 
-// ── Recoveries query ──────────────────────────────────────────────────────────
-export function buildRecoveriesQuery({ dateFrom: df, dateTo: dt, includedInstitutions }: AgentPerfFilters): string {
+// ── Agent Performance query ─────────────────────────────────────────────────
+// Single unified query — no more modes. Every agent row carries all three
+// amount flavors (total_normalized_value, total_amount_recovered,
+// total_revenue) at once; only total_normalized_value drives weighted_score.
+export function buildAgentPerformanceQuery({ dateFrom: df, dateTo: dt, includedInstitutions }: AgentPerfFilters): string {
   const instFilter      = buildInstFilter(includedInstitutions)
-  const attributionCtes = buildRecoveryAttributionCtes(df, dt, instFilter)
-  const agentCtes       = AGENTS.map(a => recoveryAgentCtePair(a.lower, df, dt, instFilter)).join(',')
+  const attributionCtes = buildUnifiedAttributionCtes(df, dt, instFilter)
+  const agentCtes       = AGENTS.map(a => agentCtePair(a.lower, df, dt, instFilter)).join(',')
 
   return `WITH ${sharedCtePrologue(df, dt, instFilter)},
-${attributionCtes},
-${agentCtes},
-${finalSelect(df, dt)}`.trim()
-}
-
-// ── Normalized recovery query ─────────────────────────────────────────────────
-// Same attribution as recoveries, but total_amount = SUM(deposit / lead_value)
-// per attributed paying customer — a dimensionless recovery efficiency score.
-export function buildNormalizedRecoveryQuery({ dateFrom: df, dateTo: dt, includedInstitutions }: AgentPerfFilters): string {
-  const instFilter      = buildInstFilter(includedInstitutions)
-  const attributionCtes = buildRecoveryAttributionCtes(df, dt, instFilter, true)
-  const agentCtes       = AGENTS.map(a => recoveryAgentCtePair(a.lower, df, dt, instFilter)).join(',')
-
-  return `WITH ${sharedCtePrologue(df, dt, instFilter)},
-${attributionCtes},
-${agentCtes},
-${finalSelect(df, dt, true)}`.trim()
-}
-
-// ── Revenue query ─────────────────────────────────────────────────────────────
-export function buildRevenueQuery({ dateFrom: df, dateTo: dt, includedInstitutions }: AgentPerfFilters): string {
-  const instFilter      = buildInstFilter(includedInstitutions)
-  const attributionCtes = buildRevenueAttributionCtes(df, dt, instFilter)
-  const agentCtes       = AGENTS.map(a => revenueAgentCtePair(a.lower)).join(',')
-
-  return `WITH ${sharedCtePrologue(df, dt, instFilter)},
-
-revenue_base AS (
-  SELECT
-    d.date, d.client_id, d.phone, d.institution, d.daily_deposit_all_op,
-    d.total_assigned_amount_due,
-    d.kesta_call,      d.kesta_call_inbound,      d.kesta_call_logged,      d.kesta_whatsapp,
-    d.dami_call,       d.dami_call_inbound,       d.dami_call_logged,       d.dami_whatsapp,
-    d.gbolade_call,    d.gbolade_call_inbound,    d.gbolade_call_logged,    d.gbolade_whatsapp,
-    d.diana_call,      d.diana_call_inbound,      d.diana_call_logged,      d.diana_whatsapp,
-    d.jedidah_call,    d.jedidah_call_inbound,    d.jedidah_call_logged,    d.jedidah_whatsapp,
-    d.emmanuella_call, d.emmanuella_call_inbound, d.emmanuella_call_logged, d.emmanuella_whatsapp,
-    d.itoro_call,      d.itoro_call_inbound,      d.itoro_call_logged,      d.itoro_whatsapp,
-    d.daily_deposit_all_op
-      * CASE WHEN d.institution IN ('NUMIDA', 'NUMIDA ARCHIVED', 'PEZESHA') THEN fx.ngn_per_unit ELSE 1 END
-      * CASE
-          WHEN d.institution IN ('NUMIDA', 'NUMIDA ARCHIVED') AND d.min_days_in_arrears > 90               THEN 0.3
-          WHEN d.institution IN ('NUMIDA', 'NUMIDA ARCHIVED') AND d.min_days_in_arrears BETWEEN 61 AND 90  THEN 0.15
-          WHEN d.institution IN ('REMEDIAL HEALTH', 'REMEDIAL ARCHIVED',
-                                 'KESSINGTON', 'KESSINGTON ARCHIVED')                                       THEN 0.175
-          WHEN d.institution = 'VICTORY EMPOWERMENT' AND d.min_days_in_arrears > 90                        THEN 0.3
-          WHEN d.institution = 'VICTORY EMPOWERMENT' AND d.min_days_in_arrears BETWEEN 61 AND 90           THEN 0.25
-          WHEN d.institution = 'VICTORY EMPOWERMENT' AND d.min_days_in_arrears BETWEEN 31 AND 60           THEN 0.20
-          WHEN d.institution = 'KUDA'                                                                       THEN 0.3
-          WHEN d.institution = 'SYCAMORE MFB'                                                              THEN 0.325
-          WHEN d.institution = 'SHARA'                                                                      THEN 0.25
-          WHEN d.institution = 'GROOMING MFI' AND d.date >= '2026-04-01'                                   THEN 0.195
-          WHEN d.institution = 'GROOMING MFI'                                                              THEN 0.25
-          WHEN d.institution = 'GROOMING MFB' AND d.min_days_in_arrears > 90                               THEN 0.215
-          WHEN d.institution = 'GROOMING MFB' AND d.min_days_in_arrears BETWEEN 61 AND 90                  THEN 0.175
-          WHEN d.institution = 'GROOMING MFB' AND d.min_days_in_arrears BETWEEN 31 AND 60                  THEN 0.10
-          WHEN d.institution = 'ROSABON'                                                                    THEN 0.135
-          WHEN d.institution = 'LAPO'                                                                       THEN 0.10
-          WHEN d.institution = 'LUKEFIELD'                                                                  THEN 0.2
-          WHEN d.institution = 'NOLT' AND d.min_days_in_arrears > 180                                      THEN 0.30
-          WHEN d.institution = 'NOLT' AND d.min_days_in_arrears BETWEEN 91 AND 180                         THEN 0.20
-          WHEN d.institution = 'NOLT' AND d.min_days_in_arrears BETWEEN 61 AND 90                          THEN 0.175
-          WHEN d.institution = 'NOLT' AND d.min_days_in_arrears BETWEEN 31 AND 60                          THEN 0.15
-          WHEN d.institution = 'PEZESHA' AND d.min_days_in_arrears > 360                                   THEN 0.25
-          WHEN d.institution = 'PEZESHA' AND d.min_days_in_arrears BETWEEN 181 AND 360                     THEN 0.2
-          WHEN d.institution = 'PEZESHA' AND d.min_days_in_arrears BETWEEN 91 AND 180                      THEN 0.15
-          WHEN d.institution = 'CREDIT DIRECT' AND d.min_days_in_arrears > 90                              THEN 0.15
-          WHEN d.institution = 'CREDIT DIRECT' AND d.min_days_in_arrears BETWEEN 31 AND 90                 THEN 0.10
-          WHEN d.institution = 'RENMONEY' AND d.date > '2026-06-11'                                        THEN 0.125
-          WHEN d.institution = 'RENMONEY'                                                                   THEN 0.15
-          WHEN d.institution = 'MAINSTREET'                                                                 THEN 0.25
-          WHEN d.institution = 'AB MFB'                                                                     THEN 0.25
-          WHEN d.institution = 'BAOBAB'                                                                     THEN 0.25
-          ELSE 0
-        END AS daily_revenue
-  FROM \`fssspark.recovery_methods_data.recovery_dashboard_daily_table\` d
-  CROSS JOIN conversion_rate fx
-  WHERE d.date BETWEEN '${df}' AND '${dt}'
-    ${instFilter}
-),
 ${attributionCtes},
 ${agentCtes},
 ${finalSelect(df, dt)}`.trim()

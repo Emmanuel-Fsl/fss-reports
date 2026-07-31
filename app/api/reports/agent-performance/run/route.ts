@@ -2,9 +2,7 @@ import { NextRequest, NextResponse }  from 'next/server'
 import { verifyToken }                from '@/lib/firebase/admin'
 import { runBQQuery }                 from '@/lib/bq/client'
 import {
-  buildRecoveriesQuery,
-  buildRevenueQuery,
-  buildNormalizedRecoveryQuery,
+  buildAgentPerformanceQuery,
   buildFxRateQuery,
 }                                     from '@/lib/reports/agent-performance.queries'
 import type { ReportRow }             from '@/types'
@@ -36,14 +34,10 @@ export async function POST(req: NextRequest) {
   try {
     await verifyToken(req.headers.get('Authorization'))
 
-    const { mode, dateFrom, dateTo, includedInstitutions } = await req.json()
+    const { dateFrom, dateTo, includedInstitutions } = await req.json()
     const start = Date.now()
 
-    const sql = mode === 'revenue'
-      ? buildRevenueQuery({ dateFrom, dateTo, includedInstitutions })
-      : mode === 'normalized_recovery'
-        ? buildNormalizedRecoveryQuery({ dateFrom, dateTo, includedInstitutions })
-        : buildRecoveriesQuery({ dateFrom, dateTo, includedInstitutions })
+    const sql = buildAgentPerformanceQuery({ dateFrom, dateTo, includedInstitutions })
 
     const [[rawRows], [fxRows]] = await Promise.all([
       runBQQuery(sql),
@@ -52,7 +46,7 @@ export async function POST(req: NextRequest) {
 
     const rows   = normalizeRows(rawRows as unknown[])
     // ngn_per_unit: 1 KES = ngn_per_unit NGN  (e.g. 10.5 means 1 KES = ₦10.50)
-    // Both query modes return total_amount already in NGN — the BQ query handles conversion.
+    // total_amount_recovered/total_revenue are already in NGN — the BQ query handles conversion.
     // fxRate is passed to the frontend so it can optionally display amounts in KES (÷ fxRate).
     const fxRate = Number((fxRows as Record<string, unknown>[])[0]?.ngn_per_unit ?? 10.5)
 
