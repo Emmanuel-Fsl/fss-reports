@@ -244,7 +244,7 @@ SELECT
   ${cols.join(',\n  ')}
 FROM \`fssspark.recovery_methods_data.recovery_dashboard_daily_table\` d
 ${joinClause}
-WHERE daily_deposit_all > 0
+WHERE ${depositExpr} > 0
   ${instWhereClause('d.institution', inst)}
   AND date BETWEEN '${dateFrom}' AND '${dateTo}'
   ${groomingDetailFilter}
