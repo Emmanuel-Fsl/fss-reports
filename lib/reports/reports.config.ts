@@ -21,6 +21,8 @@ export const ALL_INSTITUTIONS = [
   'MAINSTREET',
   'AB MFB',
   'BAOBAB',
+  'VENDEASE',
+  'STERLING',
 ] as const
 
 export type Institution = typeof ALL_INSTITUTIONS[number]

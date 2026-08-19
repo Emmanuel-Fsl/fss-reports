@@ -285,8 +285,8 @@ conversion_rate AS (
 // Per-row commission rate used to compute revenue from a raw deposit amount —
 // institution- and arrears-bucket-specific. Same rates as the Billing report.
 const COMMISSION_RATE_EXPR = `CASE
-          WHEN institution IN ('NUMIDA', 'NUMIDA ARCHIVED') AND min_days_in_arrears > 90               THEN 0.3
-          WHEN institution IN ('NUMIDA', 'NUMIDA ARCHIVED') AND min_days_in_arrears BETWEEN 61 AND 90  THEN 0.15
+          WHEN institution IN ('NUMIDA', 'NUMIDA ARCHIVED') AND min_days_in_arrears_running > 90               THEN 0.3
+          WHEN institution IN ('NUMIDA', 'NUMIDA ARCHIVED') AND min_days_in_arrears_running BETWEEN 61 AND 90  THEN 0.15
           WHEN institution IN ('REMEDIAL HEALTH', 'REMEDIAL ARCHIVED',
                                  'KESSINGTON', 'KESSINGTON ARCHIVED')                                    THEN 0.175
           WHEN institution = 'VICTORY EMPOWERMENT' AND min_days_in_arrears > 90                        THEN 0.3
@@ -307,16 +307,21 @@ const COMMISSION_RATE_EXPR = `CASE
           WHEN institution = 'NOLT' AND min_days_in_arrears BETWEEN 91 AND 180                          THEN 0.20
           WHEN institution = 'NOLT' AND min_days_in_arrears BETWEEN 61 AND 90                           THEN 0.175
           WHEN institution = 'NOLT' AND min_days_in_arrears BETWEEN 31 AND 60                           THEN 0.15
-          WHEN institution = 'PEZESHA' AND min_days_in_arrears > 360                                    THEN 0.25
-          WHEN institution = 'PEZESHA' AND min_days_in_arrears BETWEEN 181 AND 360                      THEN 0.2
-          WHEN institution = 'PEZESHA' AND min_days_in_arrears BETWEEN 91 AND 180                       THEN 0.15
+          WHEN institution = 'PEZESHA' AND min_days_in_arrears_running > 360                                    THEN 0.25
+          WHEN institution = 'PEZESHA' AND min_days_in_arrears_running BETWEEN 181 AND 360                      THEN 0.2
+          WHEN institution = 'PEZESHA' AND min_days_in_arrears_running BETWEEN 91 AND 180                       THEN 0.15
           WHEN institution = 'CREDIT DIRECT' AND min_days_in_arrears > 90                               THEN 0.15
           WHEN institution = 'CREDIT DIRECT' AND min_days_in_arrears BETWEEN 31 AND 90                  THEN 0.10
           WHEN institution = 'RENMONEY' AND date > '2026-06-11'                                         THEN 0.125
           WHEN institution = 'RENMONEY'                                                                  THEN 0.15
           WHEN institution = 'MAINSTREET'                                                                THEN 0.25
           WHEN institution = 'AB MFB'                                                                    THEN 0.25
-          WHEN institution = 'BAOBAB'                                                                    THEN 0.25
+          WHEN institution = 'BAOBAB' AND min_days_in_arrears > 180                                       THEN 0.30
+          WHEN institution = 'BAOBAB' AND min_days_in_arrears BETWEEN 121 AND 180                         THEN 0.25
+          WHEN institution = 'BAOBAB' AND min_days_in_arrears <= 120                                      THEN 0.20
+          WHEN institution = 'BAOBAB'                                                                     THEN 0.25
+          WHEN institution = 'VENDEASE'                                                                   THEN 0.25
+          WHEN institution = 'STERLING'                                                                   THEN 0.25
           ELSE 0
         END`
 

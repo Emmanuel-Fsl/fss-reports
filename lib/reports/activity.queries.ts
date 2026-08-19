@@ -64,6 +64,13 @@ function bucketCaseExpr(institution: string): string {
         WHEN arrears_days BETWEEN 91  AND 180 THEN '91-180'
         ELSE NULL
       END`
+    case 'BAOBAB':
+      return `CASE
+        WHEN arrears_days > 180                THEN '181+'
+        WHEN arrears_days BETWEEN 121 AND 180  THEN '121-180'
+        WHEN arrears_days <= 120               THEN '0-120'
+        ELSE NULL
+      END`
     default:
       return 'CAST(NULL AS STRING)'
   }
@@ -84,6 +91,10 @@ export function buildActivityQuery(
 // NUMIDA/PEZESHA store amounts in KES; everything else is NGN. Summing more than
 // one institution together needs an FX pass whenever the mix could include both.
 const KES_INSTITUTIONS_SQL = `'NUMIDA', 'NUMIDA ARCHIVED', 'PEZESHA'`
+
+// BAOBAB bills off daily_deposit_all_op instead of daily_deposit_all — every
+// other institution keeps the standard field.
+const DEPOSIT_EXPR = `CASE WHEN institution = 'BAOBAB' THEN daily_deposit_all_op ELSE daily_deposit_all END`
 
 function moneyExpr(col: string, institutions: string[]): string {
   return institutions.length > 1
@@ -112,7 +123,7 @@ WITH raw_metrics AS (
     client_id,
     MIN(min_days_in_arrears)                               AS arrears_days,
     MAX(${moneyExpr('total_assigned_amount_due', institutions)})  AS total_assigned,
-    SUM(${moneyExpr('daily_deposit_all', institutions)})          AS amount_recovered,
+    SUM(${moneyExpr(`(${DEPOSIT_EXPR})`, institutions)})           AS amount_recovered,
     SUM(daily_agent_inbound)                               AS inbound_calls,
     SUM(daily_agent_outbound)                              AS outbound_calls,
     SUM(daily_vb_outbound)                                 AS vbs,
@@ -177,7 +188,7 @@ WITH metrics AS (
     client_id,
     MIN(min_days_in_arrears)                               AS arrears_days,
     MAX(total_assigned_amount_due)                         AS total_assigned,
-    SUM(daily_deposit_all)                                 AS amount_recovered,
+    SUM(${DEPOSIT_EXPR})                                    AS amount_recovered,
     SUM(daily_agent_inbound)                               AS inbound_calls,
     SUM(daily_agent_outbound)                              AS outbound_calls,
     SUM(daily_vb_outbound)                                 AS vbs,

@@ -39,22 +39,40 @@ export function buildBillingSummaryQuery({ institution, dateFrom, dateTo, groomi
     : ''
 
   return `
+-- KUDA's commission tier (effective 2026-07-01) depends on that calendar
+-- month's TOTAL recoveries, not this report's own date range — a
+-- partial-month report must still see the correct full-month tier. Computed
+-- unfiltered by institution/date-range selections, same reasoning as the
+-- lead-value lookup elsewhere: it's a global fact, not report-scoped.
+WITH kuda_monthly AS (
+  SELECT
+    DATE_TRUNC(date, MONTH) AS month,
+    SUM(daily_deposit_all)  AS monthly_total
+  FROM \`fssspark.recovery_methods_data.recovery_dashboard_daily_table\`
+  WHERE institution = 'KUDA'
+    AND daily_deposit_all > 0
+  GROUP BY month
+),
 -- Step 1: normalise institution names before any CASE logic runs.
-WITH normed AS (
+normed AS (
   SELECT
     CASE
-      WHEN institution = 'NUMIDA ARCHIVED'     THEN 'NUMIDA'
-      WHEN institution = 'REMEDIAL ARCHIVED'   THEN 'REMEDIAL HEALTH'
-      WHEN institution = 'KESSINGTON ARCHIVED' THEN 'KESSINGTON'
-      ELSE institution
+      WHEN d.institution = 'NUMIDA ARCHIVED'     THEN 'NUMIDA'
+      WHEN d.institution = 'REMEDIAL ARCHIVED'   THEN 'REMEDIAL HEALTH'
+      WHEN d.institution = 'KESSINGTON ARCHIVED' THEN 'KESSINGTON'
+      ELSE d.institution
     END AS institution,
-    daily_deposit_all,
-    min_days_in_arrears,
-    min_days_in_arrears_running,
-    date
-  FROM \`fssspark.recovery_methods_data.recovery_dashboard_daily_table\`
-  WHERE date BETWEEN '${df}' AND '${dt}'
-    AND daily_deposit_all > 0
+    -- BAOBAB bills off daily_deposit_all_op instead of daily_deposit_all —
+    -- every other institution keeps the standard field.
+    CASE WHEN d.institution = 'BAOBAB' THEN d.daily_deposit_all_op ELSE d.daily_deposit_all END AS daily_deposit_all,
+    d.min_days_in_arrears,
+    d.min_days_in_arrears_running,
+    d.date,
+    km.monthly_total AS kuda_monthly_total
+  FROM \`fssspark.recovery_methods_data.recovery_dashboard_daily_table\` d
+  LEFT JOIN kuda_monthly km ON km.month = DATE_TRUNC(d.date, MONTH)
+  WHERE d.date BETWEEN '${df}' AND '${dt}'
+    AND (CASE WHEN d.institution = 'BAOBAB' THEN d.daily_deposit_all_op ELSE d.daily_deposit_all END) > 0
     ${instClause}
     ${groomingFilter}
 ),
@@ -69,9 +87,9 @@ base AS (
       WHEN institution = 'CREDIT DIRECT' AND min_days_in_arrears > 90              THEN '91+'
       WHEN institution = 'NUMIDA'        AND min_days_in_arrears_running BETWEEN 61 AND 90  THEN '61-90'
       WHEN institution = 'NUMIDA'        AND min_days_in_arrears_running > 90               THEN '91+'
-      WHEN institution = 'PEZESHA'            AND min_days_in_arrears BETWEEN 91 AND 180  THEN '91-180'
-      WHEN institution = 'PEZESHA'            AND min_days_in_arrears BETWEEN 181 AND 360 THEN '181-360'
-      WHEN institution = 'PEZESHA'            AND min_days_in_arrears > 360               THEN '360+'
+      WHEN institution = 'PEZESHA'            AND min_days_in_arrears_running BETWEEN 91 AND 180  THEN '91-180'
+      WHEN institution = 'PEZESHA'            AND min_days_in_arrears_running BETWEEN 181 AND 360 THEN '181-360'
+      WHEN institution = 'PEZESHA'            AND min_days_in_arrears_running > 360               THEN '360+'
       WHEN institution = 'VICTORY EMPOWERMENT' AND min_days_in_arrears <= 60              THEN '0-60'
       WHEN institution = 'VICTORY EMPOWERMENT' AND min_days_in_arrears BETWEEN 61 AND 90  THEN '61-90'
       WHEN institution = 'VICTORY EMPOWERMENT' AND min_days_in_arrears > 90               THEN '91+'
@@ -82,13 +100,23 @@ base AS (
       WHEN institution = 'GROOMING MFB'        AND min_days_in_arrears BETWEEN 31 AND 60  THEN '31-60'
       WHEN institution = 'GROOMING MFB'        AND min_days_in_arrears BETWEEN 61 AND 90  THEN '61-90'
       WHEN institution = 'GROOMING MFB'        AND min_days_in_arrears > 90               THEN '91+'
+      WHEN institution = 'BAOBAB'               AND min_days_in_arrears <= 120              THEN '0-120'
+      WHEN institution = 'BAOBAB'               AND min_days_in_arrears BETWEEN 121 AND 180 THEN '121-180'
+      WHEN institution = 'BAOBAB'               AND min_days_in_arrears > 180              THEN '181+'
       ELSE 'ALL'
     END AS bucket,
     CASE
       WHEN institution = 'VICTORY EMPOWERMENT' AND min_days_in_arrears > 90               THEN 0.3
       WHEN institution = 'VICTORY EMPOWERMENT' AND min_days_in_arrears BETWEEN 61 AND 90  THEN 0.25
       WHEN institution = 'VICTORY EMPOWERMENT' AND min_days_in_arrears <= 60              THEN 0.20
-      WHEN institution = 'KUDA'                                                            THEN 0.3
+      -- KUDA tiered commission (effective 2026-07-01) — cliff-style: whichever
+      -- band that calendar month's TOTAL recoveries land in applies to the
+      -- entire month, not just the portion above the threshold.
+      WHEN institution = 'KUDA' AND date >= '2026-07-01' AND kuda_monthly_total >= 110200000 THEN 0.25
+      WHEN institution = 'KUDA' AND date >= '2026-07-01' AND kuda_monthly_total >= 81700000  THEN 0.225
+      WHEN institution = 'KUDA' AND date >= '2026-07-01' AND kuda_monthly_total >= 55100000  THEN 0.175
+      WHEN institution = 'KUDA' AND date >= '2026-07-01'                                     THEN 0.15
+      WHEN institution = 'KUDA'                                                              THEN 0.3
       WHEN institution = 'SYCAMORE MFB'                                                   THEN 0.325
       WHEN institution = 'SHARA'                                                           THEN 0.25
       WHEN institution = 'NUMIDA'              AND min_days_in_arrears_running > 90               THEN 0.3
@@ -106,13 +134,16 @@ base AS (
       WHEN institution = 'NOLT'                AND min_days_in_arrears BETWEEN 91 AND 180  THEN 0.20
       WHEN institution = 'NOLT'                AND min_days_in_arrears BETWEEN 61 AND 90   THEN 0.175
       WHEN institution = 'NOLT'                AND min_days_in_arrears BETWEEN 31 AND 60   THEN 0.15
-      WHEN institution = 'PEZESHA'             AND min_days_in_arrears > 360               THEN 0.25
-      WHEN institution = 'PEZESHA'             AND min_days_in_arrears BETWEEN 181 AND 360 THEN 0.2
-      WHEN institution = 'PEZESHA'             AND min_days_in_arrears BETWEEN 91 AND 180  THEN 0.15
+      WHEN institution = 'PEZESHA'             AND min_days_in_arrears_running > 360               THEN 0.25
+      WHEN institution = 'PEZESHA'             AND min_days_in_arrears_running BETWEEN 181 AND 360 THEN 0.2
+      WHEN institution = 'PEZESHA'             AND min_days_in_arrears_running BETWEEN 91 AND 180  THEN 0.15
       WHEN institution = 'CREDIT DIRECT'       AND min_days_in_arrears > 90               THEN 0.15
       WHEN institution = 'CREDIT DIRECT'       AND min_days_in_arrears BETWEEN 31 AND 90  THEN 0.1
       WHEN institution = 'RENMONEY'            AND date > '2026-06-11'                    THEN 0.125
       WHEN institution = 'RENMONEY'                                                        THEN 0.15
+      WHEN institution = 'BAOBAB'               AND min_days_in_arrears > 180              THEN 0.30
+      WHEN institution = 'BAOBAB'               AND min_days_in_arrears BETWEEN 121 AND 180 THEN 0.25
+      WHEN institution = 'BAOBAB'               AND min_days_in_arrears <= 120              THEN 0.20
       ELSE 0.25
     END AS commission
   FROM normed
@@ -183,8 +214,12 @@ export function buildBillingDetailQuery(inst: string, dateFrom: string, dateTo: 
     push('d.full_name AS `Full Name`', true)
   }
 
+  // BAOBAB bills off daily_deposit_all_op instead of daily_deposit_all — must
+  // match buildBillingSummaryQuery's substitution or the two totals diverge.
+  const depositExpr = inst === 'BAOBAB' ? 'daily_deposit_all_op' : 'daily_deposit_all'
+
   push('MAX(total_assigned_amount_due)                                AS `Assigned Amount`',  false)
-  push('SUM(daily_deposit_all)                                        AS `Amount Recovered`', false)
+  push(`SUM(${depositExpr})                                        AS \`Amount Recovered\``, false)
 
   if (needsBalance) {
     push("ARRAY_AGG(net_balance ORDER BY date DESC LIMIT 1)[OFFSET(0)] AS `Current Loan Balance`", false)
@@ -220,13 +255,26 @@ GROUP BY ${groupPos.join(', ')}
     return `
 WITH base_data AS (
   ${innerQuery.split('\n').join('\n  ')}
+),
+-- A loan can have more than one payment_details row for the same day (e.g.
+-- two payment modes used the same date) — collapse to one row per
+-- (loan_id, date) BEFORE joining, or the join fans out base_data and
+-- double-counts Amount Recovered when the detail rows are summed.
+payment_details AS (
+  SELECT
+    loan_id,
+    transaction_date,
+    STRING_AGG(DISTINCT product,      ', ') AS product,
+    STRING_AGG(DISTINCT payment_mode, ', ') AS payment_mode
+  FROM \`fssspark.recovery_methods_data.credit_direct_payment_details\`
+  GROUP BY loan_id, transaction_date
 )
 SELECT
   base_data.*,
   pd.product      AS \`Product\`,
   pd.payment_mode AS \`Payment Mode\`
 FROM base_data
-LEFT JOIN \`fssspark.recovery_methods_data.credit_direct_payment_details\` pd
+LEFT JOIN payment_details pd
   ON base_data.\`Loan ID\`  = pd.loan_id
   AND base_data.\`Date\`    = pd.transaction_date
 `.trim()
