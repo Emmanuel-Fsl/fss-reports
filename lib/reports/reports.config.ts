@@ -23,6 +23,7 @@ export const ALL_INSTITUTIONS = [
   'BAOBAB',
   'VENDEASE',
   'STERLING',
+  'KOINS MFB',
 ] as const
 
 export type Institution = typeof ALL_INSTITUTIONS[number]

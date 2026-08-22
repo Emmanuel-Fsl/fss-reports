@@ -322,6 +322,7 @@ const COMMISSION_RATE_EXPR = `CASE
           WHEN institution = 'BAOBAB'                                                                     THEN 0.25
           WHEN institution = 'VENDEASE'                                                                   THEN 0.25
           WHEN institution = 'STERLING'                                                                   THEN 0.25
+          WHEN institution = 'KOINS MFB'                                                                  THEN 0.25
           ELSE 0
         END`
 
