@@ -61,6 +61,7 @@ normed AS (
     ${baobabDepositExpr} AS daily_deposit_all,
     d.min_days_in_arrears,
     d.min_days_in_arrears_running,
+    d.min_portfolio_upload_date,
     d.date,
     km.monthly_total AS kuda_monthly_total
   FROM \`fssspark.recovery_methods_data.recovery_dashboard_daily_table\` d
@@ -97,6 +98,7 @@ base AS (
       WHEN institution = 'BAOBAB'               AND min_days_in_arrears <= 120              THEN '0-120'
       WHEN institution = 'BAOBAB'               AND min_days_in_arrears BETWEEN 121 AND 180 THEN '121-180'
       WHEN institution = 'BAOBAB'               AND min_days_in_arrears > 180              THEN '181+'
+      WHEN institution = 'LAPO'                 AND min_portfolio_upload_date = '2026-07-29' THEN '2026-07-29 upload'
       ELSE 'ALL'
     END AS bucket,
     CASE
@@ -122,6 +124,7 @@ base AS (
       WHEN institution = 'GROOMING MFB'        AND min_days_in_arrears BETWEEN 61 AND 90  THEN 0.175
       WHEN institution = 'GROOMING MFB'        AND min_days_in_arrears BETWEEN 31 AND 60  THEN 0.10
       WHEN institution = 'ROSABON'                                                         THEN 0.135
+      WHEN institution = 'LAPO' AND min_portfolio_upload_date = '2026-07-29'               THEN 0.02
       WHEN institution = 'LAPO'                                                            THEN 0.10
       WHEN institution = 'LUKEFIELD'                                                       THEN 0.2
       WHEN institution = 'NOLT'                AND min_days_in_arrears > 180               THEN 0.30
