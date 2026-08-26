@@ -98,7 +98,7 @@ base AS (
       WHEN institution = 'BAOBAB'               AND min_days_in_arrears <= 120              THEN '0-120'
       WHEN institution = 'BAOBAB'               AND min_days_in_arrears BETWEEN 121 AND 180 THEN '121-180'
       WHEN institution = 'BAOBAB'               AND min_days_in_arrears > 180              THEN '181+'
-      WHEN institution = 'LAPO'                 AND min_portfolio_upload_date = '2026-07-29' THEN '2026-07-29 upload'
+      WHEN institution = 'LAPO'                 AND min_portfolio_upload_date = '2026-07-29' THEN '2% Bucket'
       ELSE 'ALL'
     END AS bucket,
     CASE
