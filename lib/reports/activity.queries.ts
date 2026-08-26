@@ -1,29 +1,20 @@
 // SERVER-ONLY
 
-const ARCHIVED_MAP: Record<string, string> = {
-  'NUMIDA':          'NUMIDA ARCHIVED',
-  'REMEDIAL HEALTH': 'REMEDIAL ARCHIVED',
-  'KESSINGTON':      'KESSINGTON ARCHIVED',
-}
+import { archivedVariantsOf, isArchivedExpr, normaliseInstitutionExpr } from './reports.config'
 
 // Accepts one or more institutions — always builds an IN (...) clause, expanding
-// each institution's archived variant so multi-institution sums stay accurate.
+// each institution's archived variant(s) so multi-institution sums stay accurate.
 function instFilter(institutions: string | string[]): string {
   const list = Array.isArray(institutions) ? institutions : [institutions]
   const expanded = new Set<string>()
   for (const inst of list) {
     expanded.add(inst)
-    if (ARCHIVED_MAP[inst]) expanded.add(ARCHIVED_MAP[inst])
+    for (const v of archivedVariantsOf(inst)) expanded.add(v)
   }
   return `institution IN (${[...expanded].map(i => `'${i}'`).join(', ')})`
 }
 
-const NORMALISE_INST = `CASE
-    WHEN institution = 'NUMIDA ARCHIVED'     THEN 'NUMIDA'
-    WHEN institution = 'REMEDIAL ARCHIVED'   THEN 'REMEDIAL HEALTH'
-    WHEN institution = 'KESSINGTON ARCHIVED' THEN 'KESSINGTON'
-    ELSE institution
-  END`
+const NORMALISE_INST = normaliseInstitutionExpr('institution')
 
 // CASE WHEN expression that assigns a bucket label based on arrears_days (MIN per client).
 function bucketCaseExpr(institution: string): string {
@@ -90,11 +81,13 @@ export function buildActivityQuery(
 
 // NUMIDA/PEZESHA store amounts in KES; everything else is NGN. Summing more than
 // one institution together needs an FX pass whenever the mix could include both.
-const KES_INSTITUTIONS_SQL = `'NUMIDA', 'NUMIDA ARCHIVED', 'PEZESHA'`
+const KES_INSTITUTIONS_SQL = ['NUMIDA', ...archivedVariantsOf('NUMIDA'), 'PEZESHA', ...archivedVariantsOf('PEZESHA')]
+  .map(v => `'${v}'`).join(', ')
 
-// BAOBAB bills off daily_deposit_all_op instead of daily_deposit_all — every
-// other institution keeps the standard field.
-const DEPOSIT_EXPR = `CASE WHEN institution = 'BAOBAB' THEN daily_deposit_all_op ELSE daily_deposit_all END`
+// BAOBAB (including its archived variant) bills off daily_deposit_all_op
+// instead of daily_deposit_all — every other institution keeps the standard
+// field. Normalises first so the archived variant is caught too.
+const DEPOSIT_EXPR = `CASE WHEN ${NORMALISE_INST} = 'BAOBAB' THEN daily_deposit_all_op ELSE daily_deposit_all END`
 
 function moneyExpr(col: string, institutions: string[]): string {
   return institutions.length > 1
@@ -121,6 +114,11 @@ function buildSingleQuery(institutions: string[], df: string, dt: string, bucket
 WITH raw_metrics AS (
   SELECT
     client_id,
+    -- Archived rows count toward amount_recovered/arrears/etc. below like any
+    -- other row, but a client with ONLY archived-tagged rows in the period
+    -- shouldn't inflate the customer count — total_customers below only
+    -- counts clients who show up under a non-archived institution tag too.
+    LOGICAL_OR(NOT (${isArchivedExpr('institution')}))    AS has_non_archived_row,
     MIN(min_days_in_arrears)                               AS arrears_days,
     MAX(${moneyExpr('total_assigned_amount_due', institutions)})  AS total_assigned,
     SUM(${moneyExpr(`(${DEPOSIT_EXPR})`, institutions)})           AS amount_recovered,
@@ -151,7 +149,7 @@ metrics AS (
   FROM raw_metrics
 )
 SELECT
-  COUNT(*)                                                                      AS total_customers,
+  COUNTIF(has_non_archived_row)                                                 AS total_customers,
   COUNTIF(amount_recovered > 0)                                                 AS paying_customers,
   SAFE_DIVIDE(COUNTIF(amount_recovered > 0), COUNT(*))                          AS conversion_rate,
   SUM(total_assigned)                                                            AS total_assigned,
@@ -186,6 +184,11 @@ WITH metrics AS (
   SELECT
     ${NORMALISE_INST}                                      AS institution,
     client_id,
+    -- Archived rows count toward amount_recovered/arrears/etc. below like any
+    -- other row, but a client with ONLY archived-tagged rows in the period
+    -- shouldn't inflate the customer count — total_customers below only
+    -- counts clients who show up under a non-archived institution tag too.
+    LOGICAL_OR(NOT (${isArchivedExpr('institution')}))    AS has_non_archived_row,
     MIN(min_days_in_arrears)                               AS arrears_days,
     MAX(total_assigned_amount_due)                         AS total_assigned,
     SUM(${DEPOSIT_EXPR})                                    AS amount_recovered,
@@ -211,7 +214,7 @@ WITH metrics AS (
 )
 SELECT
   institution,
-  COUNT(*)                                                                      AS total_customers,
+  COUNTIF(has_non_archived_row)                                                 AS total_customers,
   COUNTIF(amount_recovered > 0)                                                 AS paying_customers,
   SAFE_DIVIDE(COUNTIF(amount_recovered > 0), COUNT(*))                          AS conversion_rate,
   SUM(total_assigned)                                                            AS total_assigned,

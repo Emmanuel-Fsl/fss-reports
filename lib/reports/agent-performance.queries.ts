@@ -3,6 +3,7 @@ import {
   CALL_TARGET_PER_DAY, WA_TARGET_PER_DAY, REACH_TARGET_PER_DAY,
   WEIGHT_CONTACT, WEIGHT_CONVERSION, WEIGHT_AMOUNT,
 } from './agent-performance'
+import { archivedVariantsOf } from './reports.config'
 
 export interface AgentPerfFilters {
   dateFrom:              string
@@ -22,14 +23,6 @@ export function buildFxRateQuery(): string {
   `.trim()
 }
 
-// Archived variants that are folded into their canonical institution name.
-// Selecting "NUMIDA" should also pull in "NUMIDA ARCHIVED", etc.
-const ARCHIVED_VARIANTS: Record<string, string> = {
-  'NUMIDA':          'NUMIDA ARCHIVED',
-  'REMEDIAL HEALTH': 'REMEDIAL ARCHIVED',
-  'KESSINGTON':      'KESSINGTON ARCHIVED',
-}
-
 // Build an SQL WHERE fragment that expands archived variants automatically.
 // Returns '' when no filter is needed (all / none selected).
 function buildInstFilter(includedInstitutions?: string[]): string {
@@ -37,9 +30,18 @@ function buildInstFilter(includedInstitutions?: string[]): string {
   const expanded = new Set<string>()
   for (const inst of includedInstitutions) {
     expanded.add(inst)
-    if (ARCHIVED_VARIANTS[inst]) expanded.add(ARCHIVED_VARIANTS[inst])
+    for (const v of archivedVariantsOf(inst)) expanded.add(v)
   }
   return `AND institution IN (${[...expanded].map(i => `'${i}'`).join(', ')})`
+}
+
+// Matches an institution and every one of its archived variants — used
+// throughout COMMISSION_RATE_EXPR/FX_MULTIPLIER_EXPR so archived rows get the
+// same treatment as their canonical institution instead of falling through
+// to the ELSE case.
+function instMatch(inst: string): string {
+  const variants = [inst, ...archivedVariantsOf(inst)]
+  return `institution IN (${variants.map(v => `'${v}'`).join(', ')})`
 }
 
 // Shared date-bound CTEs used by the query.
@@ -285,49 +287,48 @@ conversion_rate AS (
 // Per-row commission rate used to compute revenue from a raw deposit amount —
 // institution- and arrears-bucket-specific. Same rates as the Billing report.
 const COMMISSION_RATE_EXPR = `CASE
-          WHEN institution IN ('NUMIDA', 'NUMIDA ARCHIVED') AND min_days_in_arrears_running > 90               THEN 0.3
-          WHEN institution IN ('NUMIDA', 'NUMIDA ARCHIVED') AND min_days_in_arrears_running BETWEEN 61 AND 90  THEN 0.15
-          WHEN institution IN ('REMEDIAL HEALTH', 'REMEDIAL ARCHIVED',
-                                 'KESSINGTON', 'KESSINGTON ARCHIVED')                                    THEN 0.175
-          WHEN institution = 'VICTORY EMPOWERMENT' AND min_days_in_arrears > 90                        THEN 0.3
-          WHEN institution = 'VICTORY EMPOWERMENT' AND min_days_in_arrears BETWEEN 61 AND 90           THEN 0.25
-          WHEN institution = 'VICTORY EMPOWERMENT' AND min_days_in_arrears <= 60                       THEN 0.20
-          WHEN institution = 'KUDA'                                                                     THEN 0.3
-          WHEN institution = 'SYCAMORE MFB'                                                             THEN 0.325
-          WHEN institution = 'SHARA'                                                                     THEN 0.25
-          WHEN institution = 'GROOMING MFI' AND date >= '2026-04-01'                                    THEN 0.195
-          WHEN institution = 'GROOMING MFI'                                                             THEN 0.25
-          WHEN institution = 'GROOMING MFB' AND min_days_in_arrears > 90                                THEN 0.215
-          WHEN institution = 'GROOMING MFB' AND min_days_in_arrears BETWEEN 61 AND 90                   THEN 0.175
-          WHEN institution = 'GROOMING MFB' AND min_days_in_arrears BETWEEN 31 AND 60                   THEN 0.10
-          WHEN institution = 'ROSABON'                                                                   THEN 0.135
-          WHEN institution = 'LAPO'                                                                      THEN 0.10
-          WHEN institution = 'LUKEFIELD'                                                                 THEN 0.2
-          WHEN institution = 'NOLT' AND min_days_in_arrears > 180                                       THEN 0.30
-          WHEN institution = 'NOLT' AND min_days_in_arrears BETWEEN 91 AND 180                          THEN 0.20
-          WHEN institution = 'NOLT' AND min_days_in_arrears BETWEEN 61 AND 90                           THEN 0.175
-          WHEN institution = 'NOLT' AND min_days_in_arrears BETWEEN 31 AND 60                           THEN 0.15
-          WHEN institution = 'PEZESHA' AND min_days_in_arrears_running > 360                                    THEN 0.25
-          WHEN institution = 'PEZESHA' AND min_days_in_arrears_running BETWEEN 181 AND 360                      THEN 0.2
-          WHEN institution = 'PEZESHA' AND min_days_in_arrears_running BETWEEN 91 AND 180                       THEN 0.15
-          WHEN institution = 'CREDIT DIRECT' AND min_days_in_arrears > 90                               THEN 0.15
-          WHEN institution = 'CREDIT DIRECT' AND min_days_in_arrears BETWEEN 31 AND 90                  THEN 0.10
-          WHEN institution = 'RENMONEY' AND date > '2026-06-11'                                         THEN 0.125
-          WHEN institution = 'RENMONEY'                                                                  THEN 0.15
-          WHEN institution = 'MAINSTREET'                                                                THEN 0.25
-          WHEN institution = 'AB MFB'                                                                    THEN 0.25
-          WHEN institution = 'BAOBAB' AND min_days_in_arrears > 180                                       THEN 0.30
-          WHEN institution = 'BAOBAB' AND min_days_in_arrears BETWEEN 121 AND 180                         THEN 0.25
-          WHEN institution = 'BAOBAB' AND min_days_in_arrears <= 120                                      THEN 0.20
-          WHEN institution = 'BAOBAB'                                                                     THEN 0.25
-          WHEN institution = 'VENDEASE'                                                                   THEN 0.25
-          WHEN institution = 'STERLING'                                                                   THEN 0.25
-          WHEN institution = 'KOINS MFB'                                                                  THEN 0.25
+          WHEN ${instMatch('NUMIDA')} AND min_days_in_arrears_running > 90               THEN 0.3
+          WHEN ${instMatch('NUMIDA')} AND min_days_in_arrears_running BETWEEN 61 AND 90  THEN 0.15
+          WHEN ${instMatch('REMEDIAL HEALTH')} OR ${instMatch('KESSINGTON')}             THEN 0.175
+          WHEN ${instMatch('VICTORY EMPOWERMENT')} AND min_days_in_arrears > 90                        THEN 0.3
+          WHEN ${instMatch('VICTORY EMPOWERMENT')} AND min_days_in_arrears BETWEEN 61 AND 90           THEN 0.25
+          WHEN ${instMatch('VICTORY EMPOWERMENT')} AND min_days_in_arrears <= 60                       THEN 0.20
+          WHEN ${instMatch('KUDA')}                                                                     THEN 0.3
+          WHEN ${instMatch('SYCAMORE MFB')}                                                             THEN 0.325
+          WHEN ${instMatch('SHARA')}                                                                     THEN 0.25
+          WHEN ${instMatch('GROOMING MFI')} AND date >= '2026-04-01'                                    THEN 0.195
+          WHEN ${instMatch('GROOMING MFI')}                                                             THEN 0.25
+          WHEN ${instMatch('GROOMING MFB')} AND min_days_in_arrears > 90                                THEN 0.215
+          WHEN ${instMatch('GROOMING MFB')} AND min_days_in_arrears BETWEEN 61 AND 90                   THEN 0.175
+          WHEN ${instMatch('GROOMING MFB')} AND min_days_in_arrears BETWEEN 31 AND 60                   THEN 0.10
+          WHEN ${instMatch('ROSABON')}                                                                   THEN 0.135
+          WHEN ${instMatch('LAPO')}                                                                      THEN 0.10
+          WHEN ${instMatch('LUKEFIELD')}                                                                 THEN 0.2
+          WHEN ${instMatch('NOLT')} AND min_days_in_arrears > 180                                       THEN 0.30
+          WHEN ${instMatch('NOLT')} AND min_days_in_arrears BETWEEN 91 AND 180                          THEN 0.20
+          WHEN ${instMatch('NOLT')} AND min_days_in_arrears BETWEEN 61 AND 90                           THEN 0.175
+          WHEN ${instMatch('NOLT')} AND min_days_in_arrears BETWEEN 31 AND 60                           THEN 0.15
+          WHEN ${instMatch('PEZESHA')} AND min_days_in_arrears_running > 360                                    THEN 0.25
+          WHEN ${instMatch('PEZESHA')} AND min_days_in_arrears_running BETWEEN 181 AND 360                      THEN 0.2
+          WHEN ${instMatch('PEZESHA')} AND min_days_in_arrears_running BETWEEN 91 AND 180                       THEN 0.15
+          WHEN ${instMatch('CREDIT DIRECT')} AND min_days_in_arrears > 90                               THEN 0.15
+          WHEN ${instMatch('CREDIT DIRECT')} AND min_days_in_arrears BETWEEN 31 AND 90                  THEN 0.10
+          WHEN ${instMatch('RENMONEY')} AND date > '2026-06-11'                                         THEN 0.125
+          WHEN ${instMatch('RENMONEY')}                                                                  THEN 0.15
+          WHEN ${instMatch('MAINSTREET')}                                                                THEN 0.25
+          WHEN ${instMatch('AB MFB')}                                                                    THEN 0.25
+          WHEN ${instMatch('BAOBAB')} AND min_days_in_arrears > 180                                       THEN 0.30
+          WHEN ${instMatch('BAOBAB')} AND min_days_in_arrears BETWEEN 121 AND 180                         THEN 0.25
+          WHEN ${instMatch('BAOBAB')} AND min_days_in_arrears <= 120                                      THEN 0.20
+          WHEN ${instMatch('BAOBAB')}                                                                     THEN 0.25
+          WHEN ${instMatch('VENDEASE')}                                                                   THEN 0.25
+          WHEN ${instMatch('STERLING')}                                                                   THEN 0.25
+          WHEN ${instMatch('KOINS MFB')}                                                                  THEN 0.25
           ELSE 0
         END`
 
 // FX multiplier applied to KES-native institutions only.
-const FX_MULTIPLIER_EXPR = `CASE WHEN institution IN ('NUMIDA', 'NUMIDA ARCHIVED', 'PEZESHA') THEN fx.ngn_per_unit ELSE 1 END`
+const FX_MULTIPLIER_EXPR = `CASE WHEN ${instMatch('NUMIDA')} OR ${instMatch('PEZESHA')} THEN fx.ngn_per_unit ELSE 1 END`
 
 // Builds the payment attribution CTEs, shared across all three amount flavors
 // (raw amount recovered, revenue, normalized value) — attribution only depends

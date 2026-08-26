@@ -1,5 +1,6 @@
 import { runBQQuery } from './client'
 import type { ReportFilters, ReportRow, RunReportResponse } from '@/types'
+import { archivedVariantsOf } from '@/lib/reports/reports.config'
 
 function normalizeValue(value: unknown): string | number | null {
   if (value == null) return null
@@ -191,17 +192,9 @@ const QUERY_MAP: Record<string, QueryBuilder> = {
   bq_weekly_trend: ({ institution, year }) => {
     const y    = year?.trim() ? parseInt(year) : new Date().getFullYear()
     const inst = institution?.trim()
-    const ARCHIVED_MAP: Record<string, string> = {
-      'NUMIDA':          'NUMIDA ARCHIVED',
-      'REMEDIAL HEALTH': 'REMEDIAL ARCHIVED',
-      'KESSINGTON':      'KESSINGTON ARCHIVED',
-    }
-    const archived    = inst ? ARCHIVED_MAP[inst] : undefined
     const instClause  = !inst
       ? ''
-      : archived
-        ? `AND institution IN ('${inst}', '${archived}')`
-        : `AND institution = '${inst}'`
+      : `AND institution IN (${[inst, ...archivedVariantsOf(inst)].map(v => `'${v}'`).join(', ')})`
 
     return `
       SELECT

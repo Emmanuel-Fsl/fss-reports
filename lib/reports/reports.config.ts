@@ -35,29 +35,39 @@ export function loanIdExpr(institution: string): string {
     : `ANY_VALUE(l.loan_id)`
 }
 
-// ─── Recovery Report query builder ────────────────────────────────────────────
-// Archived variants are folded into their canonical institution names.
-const ARCHIVED_MAP: Record<string, string> = {
-  'NUMIDA':         'NUMIDA ARCHIVED',
-  'REMEDIAL HEALTH': 'REMEDIAL ARCHIVED',
-  'KESSINGTON':     'KESSINGTON ARCHIVED',
+// ─── Archived institution variants ────────────────────────────────────────────
+// BigQuery keeps a separate "<institution> ARCHIVED" row once an institution's
+// portfolio moves to archived status. Assume every institution has one —
+// with two known irregular exceptions: REMEDIAL HEALTH's is named
+// "REMEDIAL ARCHIVED", and GROOMING MFB has two archived rows, "GROOMING MFB
+// ARCHIVED" and "GROOMING MFB2 ARCHIVED". New archived cohorts otherwise
+// follow the "<institution> ARCHIVED" pattern with no report updates needed.
+export function archivedVariantsOf(inst: string): string[] {
+  if (inst === 'REMEDIAL HEALTH') return ['REMEDIAL ARCHIVED']
+  if (inst === 'GROOMING MFB')    return ['GROOMING MFB ARCHIVED', 'GROOMING MFB2 ARCHIVED']
+  return [`${inst} ARCHIVED`]
 }
 
-function instWhereClause(field: string, inst: string): string {
-  if (!inst) return ''
-  const archived = ARCHIVED_MAP[inst]
-  if (archived) return `AND ${field} IN ('${inst}', '${archived}')`
-  return `AND ${field} = '${inst}'`
+// True for any row tagged with an archived variant, regardless of institution.
+export function isArchivedExpr(field: string): string {
+  return `${field} LIKE '% ARCHIVED'`
 }
 
-// Normalises archived variants → canonical name in a SQL expression.
-function normaliseInst(field: string): string {
+// Folds an archived variant back to its canonical institution name.
+export function normaliseInstitutionExpr(field: string): string {
   return `CASE
-    WHEN ${field} = 'NUMIDA ARCHIVED'     THEN 'NUMIDA'
-    WHEN ${field} = 'REMEDIAL ARCHIVED'   THEN 'REMEDIAL HEALTH'
-    WHEN ${field} = 'KESSINGTON ARCHIVED' THEN 'KESSINGTON'
+    WHEN ${field} = 'REMEDIAL ARCHIVED'      THEN 'REMEDIAL HEALTH'
+    WHEN ${field} = 'GROOMING MFB2 ARCHIVED' THEN 'GROOMING MFB'
+    WHEN ${field} LIKE '% ARCHIVED'          THEN SUBSTR(${field}, 1, LENGTH(${field}) - 9)
     ELSE ${field}
   END`
+}
+
+// ─── Recovery Report query builder ────────────────────────────────────────────
+function instWhereClause(field: string, inst: string): string {
+  if (!inst) return ''
+  const variants = [inst, ...archivedVariantsOf(inst)]
+  return `AND ${field} IN (${variants.map(v => `'${v}'`).join(', ')})`
 }
 
 function buildRecoveryQuery(filters: ReportFilters): string {
@@ -76,7 +86,7 @@ SELECT
   d.phone                                                       AS phone,
   d.email                                                       AS email,
   full_name                                                     AS full_name,
-  ${normaliseInst('d.institution')}                             AS institution,
+  ${normaliseInstitutionExpr('d.institution')}                  AS institution,
   MAX(total_assigned_amount_due)                                AS assigned_amount,
   SUM(daily_deposit_all)                                        AS amount_recovered,
   ARRAY_AGG(net_balance ORDER BY date DESC LIMIT 1)[OFFSET(0)] AS loan_balance

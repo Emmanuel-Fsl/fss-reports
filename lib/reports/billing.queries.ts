@@ -2,6 +2,7 @@
 // Keeps large SQL template literals out of the client bundle.
 import type { ReportFilters } from '@/types'
 import { NO_LOAN_ID, NO_CLIENT_ID, NO_BALANCE } from './billing'
+import { archivedVariantsOf, normaliseInstitutionExpr } from './reports.config'
 
 const CLIENT_ID_REPLACE: Record<string, string> = {
   'CREDIT DIRECT':   'C',
@@ -11,19 +12,16 @@ const CLIENT_ID_REPLACE: Record<string, string> = {
   'RENMONEY':        'RE',
 }
 
-// ─── Archived institution normalisation helpers ───────────────────────────────
-const ARCHIVED_MAP: Record<string, string> = {
-  'NUMIDA':          'NUMIDA ARCHIVED',
-  'REMEDIAL HEALTH': 'REMEDIAL ARCHIVED',
-  'KESSINGTON':      'KESSINGTON ARCHIVED',
-}
-
 function instWhereClause(field: string, inst: string): string {
   if (!inst) return ''
-  const archived = ARCHIVED_MAP[inst]
-  if (archived) return `AND ${field} IN ('${inst}', '${archived}')`
-  return `AND ${field} = '${inst}'`
+  const variants = [inst, ...archivedVariantsOf(inst)]
+  return `AND ${field} IN (${variants.map(v => `'${v}'`).join(', ')})`
 }
+
+// BAOBAB (including its archived variant) bills off daily_deposit_all_op
+// instead of daily_deposit_all — every other institution keeps the standard
+// field. Normalises first so the archived variant is caught too.
+const baobabDepositExpr = `CASE WHEN ${normaliseInstitutionExpr('d.institution')} = 'BAOBAB' THEN d.daily_deposit_all_op ELSE d.daily_deposit_all END`
 
 // ─── Summary query ────────────────────────────────────────────────────────────
 export function buildBillingSummaryQuery({ institution, dateFrom, dateTo, groomingMfiSegment }: ReportFilters): string {
@@ -49,22 +47,18 @@ WITH kuda_monthly AS (
     DATE_TRUNC(date, MONTH) AS month,
     SUM(daily_deposit_all)  AS monthly_total
   FROM \`fssspark.recovery_methods_data.recovery_dashboard_daily_table\`
-  WHERE institution = 'KUDA'
+  WHERE institution IN ('KUDA', ${archivedVariantsOf('KUDA').map(v => `'${v}'`).join(', ')})
     AND daily_deposit_all > 0
   GROUP BY month
 ),
 -- Step 1: normalise institution names before any CASE logic runs.
 normed AS (
   SELECT
-    CASE
-      WHEN d.institution = 'NUMIDA ARCHIVED'     THEN 'NUMIDA'
-      WHEN d.institution = 'REMEDIAL ARCHIVED'   THEN 'REMEDIAL HEALTH'
-      WHEN d.institution = 'KESSINGTON ARCHIVED' THEN 'KESSINGTON'
-      ELSE d.institution
-    END AS institution,
-    -- BAOBAB bills off daily_deposit_all_op instead of daily_deposit_all —
-    -- every other institution keeps the standard field.
-    CASE WHEN d.institution = 'BAOBAB' THEN d.daily_deposit_all_op ELSE d.daily_deposit_all END AS daily_deposit_all,
+    ${normaliseInstitutionExpr('d.institution')} AS institution,
+    -- BAOBAB (including its archived variant) bills off daily_deposit_all_op
+    -- instead of daily_deposit_all — every other institution keeps the
+    -- standard field.
+    ${baobabDepositExpr} AS daily_deposit_all,
     d.min_days_in_arrears,
     d.min_days_in_arrears_running,
     d.date,
@@ -72,7 +66,7 @@ normed AS (
   FROM \`fssspark.recovery_methods_data.recovery_dashboard_daily_table\` d
   LEFT JOIN kuda_monthly km ON km.month = DATE_TRUNC(d.date, MONTH)
   WHERE d.date BETWEEN '${df}' AND '${dt}'
-    AND (CASE WHEN d.institution = 'BAOBAB' THEN d.daily_deposit_all_op ELSE d.daily_deposit_all END) > 0
+    AND (${baobabDepositExpr}) > 0
     ${instClause}
     ${groomingFilter}
 ),
