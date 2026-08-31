@@ -124,6 +124,7 @@ base AS (
       WHEN institution = 'GROOMING MFB'        AND min_days_in_arrears BETWEEN 61 AND 90  THEN 0.175
       WHEN institution = 'GROOMING MFB'        AND min_days_in_arrears BETWEEN 31 AND 60  THEN 0.10
       WHEN institution = 'ROSABON'                                                         THEN 0.135
+      WHEN institution = 'STERLING'                                                        THEN 0.10
       WHEN institution = 'LAPO' AND min_portfolio_upload_date = '2026-07-29'               THEN 0.02
       WHEN institution = 'LAPO'                                                            THEN 0.10
       WHEN institution = 'LUKEFIELD'                                                       THEN 0.2
