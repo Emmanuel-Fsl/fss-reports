@@ -316,6 +316,10 @@ const COMMISSION_RATE_EXPR = `CASE
           WHEN ${instMatch('RENMONEY')} AND date > '2026-06-11'                                         THEN 0.125
           WHEN ${instMatch('RENMONEY')}                                                                  THEN 0.15
           WHEN ${instMatch('MAINSTREET')}                                                                THEN 0.25
+          WHEN ${instMatch('AB MFB')} AND min_days_in_arrears > 180                                      THEN 0.33
+          WHEN ${instMatch('AB MFB')} AND min_days_in_arrears BETWEEN 91 AND 180                         THEN 0.285
+          WHEN ${instMatch('AB MFB')} AND min_days_in_arrears BETWEEN 61 AND 90                          THEN 0.25
+          WHEN ${instMatch('AB MFB')} AND min_days_in_arrears BETWEEN 31 AND 60                          THEN 0.20
           WHEN ${instMatch('AB MFB')}                                                                    THEN 0.25
           WHEN ${instMatch('BAOBAB')} AND min_days_in_arrears > 180                                       THEN 0.30
           WHEN ${instMatch('BAOBAB')} AND min_days_in_arrears BETWEEN 121 AND 180                         THEN 0.25

@@ -99,6 +99,10 @@ base AS (
       WHEN institution = 'BAOBAB'               AND min_days_in_arrears BETWEEN 121 AND 180 THEN '121-180'
       WHEN institution = 'BAOBAB'               AND min_days_in_arrears > 180              THEN '181+'
       WHEN institution = 'LAPO'                 AND min_portfolio_upload_date = '2026-07-29' THEN '2% Bucket'
+      WHEN institution = 'AB MFB'               AND min_days_in_arrears BETWEEN 31 AND 60  THEN '31-60'
+      WHEN institution = 'AB MFB'               AND min_days_in_arrears BETWEEN 61 AND 90  THEN '61-90'
+      WHEN institution = 'AB MFB'               AND min_days_in_arrears BETWEEN 91 AND 180 THEN '91-180'
+      WHEN institution = 'AB MFB'               AND min_days_in_arrears > 180              THEN '181+'
       ELSE 'ALL'
     END AS bucket,
     CASE
@@ -125,6 +129,10 @@ base AS (
       WHEN institution = 'GROOMING MFB'        AND min_days_in_arrears BETWEEN 31 AND 60  THEN 0.10
       WHEN institution = 'ROSABON'                                                         THEN 0.135
       WHEN institution = 'STERLING'                                                        THEN 0.10
+      WHEN institution = 'AB MFB'               AND min_days_in_arrears > 180              THEN 0.33
+      WHEN institution = 'AB MFB'               AND min_days_in_arrears BETWEEN 91 AND 180 THEN 0.285
+      WHEN institution = 'AB MFB'               AND min_days_in_arrears BETWEEN 61 AND 90  THEN 0.25
+      WHEN institution = 'AB MFB'               AND min_days_in_arrears BETWEEN 31 AND 60  THEN 0.20
       WHEN institution = 'LAPO' AND min_portfolio_upload_date = '2026-07-29'               THEN 0.02
       WHEN institution = 'LAPO'                                                            THEN 0.10
       WHEN institution = 'LUKEFIELD'                                                       THEN 0.2

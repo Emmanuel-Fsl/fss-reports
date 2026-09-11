@@ -62,6 +62,14 @@ function bucketCaseExpr(institution: string): string {
         WHEN arrears_days <= 120               THEN '0-120'
         ELSE NULL
       END`
+    case 'AB MFB':
+      return `CASE
+        WHEN arrears_days > 180               THEN '181+'
+        WHEN arrears_days BETWEEN 91 AND 180  THEN '91-180'
+        WHEN arrears_days BETWEEN 61 AND 90   THEN '61-90'
+        WHEN arrears_days BETWEEN 31 AND 60   THEN '31-60'
+        ELSE NULL
+      END`
     default:
       return 'CAST(NULL AS STRING)'
   }
