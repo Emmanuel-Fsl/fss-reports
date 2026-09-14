@@ -3,7 +3,6 @@
 import type { ReportFilters } from '@/types'
 import { NO_LOAN_ID, NO_CLIENT_ID, NO_BALANCE } from './billing'
 import { archivedVariantsOf, normaliseInstitutionExpr } from './reports.config'
-import { BAOBAB_PORTFOLIO_TYPE_CORRECTIONS_SQL } from './baobab-corrections'
 
 const CLIENT_ID_REPLACE: Record<string, string> = {
   'CREDIT DIRECT':   'C',
@@ -65,15 +64,6 @@ baobab_portfolio AS (
   WHERE institution IN ('BAOBAB', ${archivedVariantsOf('BAOBAB').map(v => `'${v}'`).join(', ')})
   GROUP BY client_id
 ),
--- Manual per-client portfolio_type correction sourced from the lender's own
--- reconciliation sheet — see baobab-corrections.ts for why this exists,
--- why it's keyed by client_id alone (not client_id+date), and its limits
--- (a snapshot, not a durable rule).
-baobab_corrections AS (
-  SELECT * FROM UNNEST(ARRAY<STRUCT<client_id STRING, portfolio_type STRING>>[
-${BAOBAB_PORTFOLIO_TYPE_CORRECTIONS_SQL}
-  ])
-),
 -- Step 1: normalise institution names before any CASE logic runs.
 normed AS (
   SELECT
@@ -85,13 +75,12 @@ normed AS (
     d.min_days_in_arrears,
     d.min_days_in_arrears_running,
     d.min_portfolio_upload_date,
-    COALESCE(bc.portfolio_type, bp.portfolio_type) AS baobab_portfolio_type,
+    bp.portfolio_type AS baobab_portfolio_type,
     d.date,
     km.monthly_total AS kuda_monthly_total
   FROM \`fssspark.recovery_methods_data.recovery_dashboard_daily_table\` d
   LEFT JOIN kuda_monthly km ON km.month = DATE_TRUNC(d.date, MONTH)
   LEFT JOIN baobab_portfolio bp ON bp.client_id = d.client_id
-  LEFT JOIN baobab_corrections bc ON bc.client_id = d.client_id
   WHERE d.date BETWEEN '${df}' AND '${dt}'
     AND (${baobabDepositExpr}) > 0
     ${instClause}
