@@ -64,6 +64,24 @@ baobab_portfolio AS (
   WHERE institution IN ('BAOBAB', ${archivedVariantsOf('BAOBAB').map(v => `'${v}'`).join(', ')})
   GROUP BY client_id
 ),
+-- Narrow per-payment override for 2 clients whose arrears crossed a tier
+-- boundary mid-period, per the lender's own reconciliation sheet.
+-- all_leads.portfolio_type only holds one value per client, so the update
+-- there necessarily picked their CURRENT (later) tier for every payment —
+-- these 2 rows correct the specific earlier payment that should still bill
+-- at the lower tier. Keyed by (client_id, date) using our own real payment
+-- dates (matched to the sheet by exact amount, since the sheet's own date
+-- column is an arrears snapshot date, not the real payment date — see the
+-- 228-client all_leads fix this narrows down from). 693990B's two payments
+-- (2026-08-01, 2026-08-12) and 2 of 777047B's three payments are covered;
+-- 777047B's 2026-07-28 payment (₦50,000) isn't in the sheet at all and is
+-- left on the default (current) tier — no lender-confirmed bucket for it.
+baobab_payment_overrides AS (
+  SELECT * FROM UNNEST(ARRAY<STRUCT<client_id STRING, date DATE, portfolio_type STRING>>[
+    ('693990B', DATE '2026-08-01', '91-120'),
+    ('777047B', DATE '2026-08-01', '91-120')
+  ])
+),
 -- Step 1: normalise institution names before any CASE logic runs.
 normed AS (
   SELECT
@@ -75,12 +93,13 @@ normed AS (
     d.min_days_in_arrears,
     d.min_days_in_arrears_running,
     d.min_portfolio_upload_date,
-    bp.portfolio_type AS baobab_portfolio_type,
+    COALESCE(po.portfolio_type, bp.portfolio_type) AS baobab_portfolio_type,
     d.date,
     km.monthly_total AS kuda_monthly_total
   FROM \`fssspark.recovery_methods_data.recovery_dashboard_daily_table\` d
   LEFT JOIN kuda_monthly km ON km.month = DATE_TRUNC(d.date, MONTH)
   LEFT JOIN baobab_portfolio bp ON bp.client_id = d.client_id
+  LEFT JOIN baobab_payment_overrides po ON po.client_id = d.client_id AND po.date = d.date
   WHERE d.date BETWEEN '${df}' AND '${dt}'
     AND (${baobabDepositExpr}) > 0
     ${instClause}
