@@ -51,6 +51,19 @@ WITH kuda_monthly AS (
     AND daily_deposit_all > 0
   GROUP BY month
 ),
+-- BAOBAB buckets off all_leads.portfolio_type instead of arrears days. A
+-- client can have more than one all_leads row (one loan under 'BAOBAB', an
+-- older one under 'BAOBAB ARCHIVED') — collapse to one row per client before
+-- joining, or the join fans out daily_deposit_all like the CREDIT DIRECT bug
+-- did. Prefers the non-archived loan's portfolio_type on the rare conflict.
+baobab_portfolio AS (
+  SELECT
+    client_id,
+    ARRAY_AGG(portfolio_type ORDER BY (institution = 'BAOBAB') DESC LIMIT 1)[OFFSET(0)] AS portfolio_type
+  FROM \`fssspark.original_cohorts.all_leads\`
+  WHERE institution IN ('BAOBAB', ${archivedVariantsOf('BAOBAB').map(v => `'${v}'`).join(', ')})
+  GROUP BY client_id
+),
 -- Step 1: normalise institution names before any CASE logic runs.
 normed AS (
   SELECT
@@ -62,10 +75,12 @@ normed AS (
     d.min_days_in_arrears,
     d.min_days_in_arrears_running,
     d.min_portfolio_upload_date,
+    bp.portfolio_type AS baobab_portfolio_type,
     d.date,
     km.monthly_total AS kuda_monthly_total
   FROM \`fssspark.recovery_methods_data.recovery_dashboard_daily_table\` d
   LEFT JOIN kuda_monthly km ON km.month = DATE_TRUNC(d.date, MONTH)
+  LEFT JOIN baobab_portfolio bp ON bp.client_id = d.client_id
   WHERE d.date BETWEEN '${df}' AND '${dt}'
     AND (${baobabDepositExpr}) > 0
     ${instClause}
@@ -95,9 +110,9 @@ base AS (
       WHEN institution = 'GROOMING MFB'        AND min_days_in_arrears BETWEEN 31 AND 60  THEN '31-60'
       WHEN institution = 'GROOMING MFB'        AND min_days_in_arrears BETWEEN 61 AND 90  THEN '61-90'
       WHEN institution = 'GROOMING MFB'        AND min_days_in_arrears > 90               THEN '91+'
-      WHEN institution = 'BAOBAB'               AND min_days_in_arrears <= 120              THEN '0-120'
-      WHEN institution = 'BAOBAB'               AND min_days_in_arrears BETWEEN 121 AND 180 THEN '121-180'
-      WHEN institution = 'BAOBAB'               AND min_days_in_arrears > 180              THEN '181+'
+      WHEN institution = 'BAOBAB'               AND baobab_portfolio_type IN ('90+', '91-120')            THEN '90-120'
+      WHEN institution = 'BAOBAB'               AND baobab_portfolio_type IN ('120+', '150+', '121-150')  THEN '121-150'
+      WHEN institution = 'BAOBAB'               AND baobab_portfolio_type = 'written-off'                 THEN 'written-off'
       WHEN institution = 'LAPO'                 AND min_portfolio_upload_date = '2026-07-29' THEN '2% Bucket'
       WHEN institution = 'AB MFB'               AND min_days_in_arrears BETWEEN 31 AND 60  THEN '31-60'
       WHEN institution = 'AB MFB'               AND min_days_in_arrears BETWEEN 61 AND 90  THEN '61-90'
@@ -147,9 +162,9 @@ base AS (
       WHEN institution = 'CREDIT DIRECT'       AND min_days_in_arrears BETWEEN 31 AND 90  THEN 0.1
       WHEN institution = 'RENMONEY'            AND date > '2026-06-11'                    THEN 0.125
       WHEN institution = 'RENMONEY'                                                        THEN 0.15
-      WHEN institution = 'BAOBAB'               AND min_days_in_arrears > 180              THEN 0.30
-      WHEN institution = 'BAOBAB'               AND min_days_in_arrears BETWEEN 121 AND 180 THEN 0.25
-      WHEN institution = 'BAOBAB'               AND min_days_in_arrears <= 120              THEN 0.20
+      WHEN institution = 'BAOBAB'               AND baobab_portfolio_type = 'written-off'                THEN 0.30
+      WHEN institution = 'BAOBAB'               AND baobab_portfolio_type IN ('120+', '150+', '121-150') THEN 0.25
+      WHEN institution = 'BAOBAB'               AND baobab_portfolio_type IN ('90+', '91-120')           THEN 0.20
       ELSE 0.25
     END AS commission
   FROM normed
